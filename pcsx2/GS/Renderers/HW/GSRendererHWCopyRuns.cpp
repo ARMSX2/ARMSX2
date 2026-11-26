@@ -152,6 +152,8 @@ bool GSRendererHW::PrepareCopyRunCopy(GSVector4i& bbox)
 		return false;
 
 	// The decision's lookup at the texture, when its address is not the one last found free.
+	if (HasDeferredScratchAt(context->TEX0.TBP0))
+		return false;
 	if (context->TEX0.TBP0 != m_copy_run_tbp0)
 	{
 		if (g_texture_cache->GetTargetWithSharedBits(context->TEX0.TBP0, context->TEX0.PSM))

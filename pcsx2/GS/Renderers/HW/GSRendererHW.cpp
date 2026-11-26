@@ -233,6 +233,7 @@ void GSRendererHW::VSync(u32 field, bool registers_written, bool idle_frame)
 			fmt::format(TRANSLATE_FS("GS", "Hash cache has used {:.2f} MB of VRAM, disabling."),
 				static_cast<float>(g_texture_cache->GetHashCacheMemoryUsage()) / 1048576.0f),
 			Host::OSD_ERROR_DURATION);
+		DropAllDeferredScratchCopies();
 		g_texture_cache->RemoveAll(true, false, true);
 		g_gs_device->PurgePool();
 		GSConfig.TexturePreloading = TexturePreloadingLevel::Partial;
@@ -3738,6 +3739,48 @@ void GSRendererHW::AgeScratchMipCache()
 			e.root_src->m_age = 0;
 		return false;
 	});
+
+	if (m_scratch_mip_cache.empty() || !g_texture_cache)
+		return;
+
+	// If the hash cache is above its configured limits, release oldest HashCachePin entries
+	// before g_texture_cache->IncAge() runs so the cache can enforce its entry/byte budget.
+	const GSTextureCache::HashCacheLimits limits = GSTextureCache::GetHashCacheLimits();
+	const size_t hc_entries = g_texture_cache->GetHashCacheEntryCount();
+	const u64 hc_bytes = g_texture_cache->GetTotalHashCacheMemoryUsage();
+	const size_t need_entries = (limits.max_entries != 0 && hc_entries > limits.max_entries) ? (hc_entries - limits.max_entries) : 0;
+	const u64 need_bytes = (limits.max_bytes != 0 && hc_entries > limits.floor_entries && hc_bytes > limits.max_bytes) ?
+		(hc_bytes - limits.max_bytes) : 0;
+	if (need_entries == 0 && need_bytes == 0)
+		return;
+
+	size_t freed_entries = 0;
+	u64 freed_bytes = 0;
+	while (freed_entries < need_entries || freed_bytes < need_bytes)
+	{
+		GSTextureCache::HashCacheEntry* victim_hc = nullptr;
+		u32 best_age = 0;
+		for (const ScratchMipCacheEntry& e : m_scratch_mip_cache)
+		{
+			if (e.root_hc && (!victim_hc || e.age > best_age))
+			{
+				victim_hc = e.root_hc.get();
+				best_age = e.age;
+			}
+		}
+		if (!victim_hc)
+			break;
+
+		const u32 victim_mem = victim_hc->texture ? victim_hc->texture->GetMemUsage() : 0;
+		std::erase_if(m_scratch_mip_cache, [victim_hc](const ScratchMipCacheEntry& e) {
+			return e.root_hc.get() == victim_hc;
+		});
+		if (victim_hc->refcount == 0)
+		{
+			freed_entries++;
+			freed_bytes += victim_mem;
+		}
+	}
 }
 
 static GSTexture* RenderScratchChain(GSTexture* root_tex, const GSVector2i& dst_size, bool identity_linear,
@@ -4063,6 +4106,8 @@ bool GSRendererHW::TryDeferScratchCopy(bool no_rt, bool no_ds, bool& out_scratch
 		{
 			if ((ot->m_from_deferred_scratch && full_replace) || ot->m_scratch_copy_streak >= 2)
 			{
+				if (m_date_chain_rt == ot->GetTexture())
+					m_date_chain_rt = nullptr;
 				g_texture_cache->RemoveTarget(ot);
 				if (g_texture_cache->FindOverlappingTarget(fbp, end_block_incl) != nullptr)
 					return false;
@@ -13651,6 +13696,20 @@ GSRendererHW::CLUTDrawTestResult GSRendererHW::PossibleCLUTDrawAggressive()
 
 void GSRendererHW::MaterialiseHeldUnderCopy()
 {
+	if (!m_deferred_scratch_copies.empty() || !m_scratch_mip_cache.empty())
+	{
+		if (PRIM->TME && !m_deferred_scratch_copies.empty())
+		{
+			const GSVector4i tr(GetTextureMinMax(m_cached_ctx.TEX0, m_cached_ctx.CLAMP, m_vt.IsLinear(), false).coverage);
+			const u32 tex_end_bp = GSLocalMemory::GetUnwrappedEndBlockAddress(
+				m_cached_ctx.TEX0.TBP0, m_cached_ctx.TEX0.TBW, m_cached_ctx.TEX0.PSM, tr) + 1;
+			MaterializeDeferredScratchCopiesForRange(m_cached_ctx.TEX0.TBP0, tex_end_bp);
+		}
+		const u32 frame_end_bp = GSLocalMemory::GetUnwrappedEndBlockAddress(
+			m_cached_ctx.FRAME.Block(), m_cached_ctx.FRAME.FBW, m_cached_ctx.FRAME.PSM, m_r) + 1;
+		InvalidateDeferredScratchForWrite(m_cached_ctx.FRAME.Block(), frame_end_bp);
+	}
+
 	// The copy road reads and writes local memory on the CPU: the texture at every level it can sample, the
 	// frame over the draw, and the depth buffer when it tests depth. The palette was loaded already, and
 	// its load materialised what it read.
@@ -13703,6 +13762,13 @@ bool GSRendererHW::CanUseSwPrimRender(bool no_rt, bool no_ds, bool draw_sprite_t
 	// Make sure this isn't something we've actually rendered to (e.g. a texture shuffle).
 	if (PRIM->TME)
 	{
+		if (!m_deferred_scratch_copies.empty())
+		{
+			const GSVector4i tr(GetTextureMinMax(m_cached_ctx.TEX0, m_cached_ctx.CLAMP, m_vt.IsLinear(), false).coverage);
+			const u32 tex_end_bp = GSLocalMemory::GetUnwrappedEndBlockAddress(
+				m_cached_ctx.TEX0.TBP0, m_cached_ctx.TEX0.TBW, m_cached_ctx.TEX0.PSM, tr) + 1;
+			MaterializeDeferredScratchCopiesForRange(m_cached_ctx.TEX0.TBP0, tex_end_bp);
+		}
 		GSTextureCache::Target* src_target = g_texture_cache->GetTargetWithSharedBits(m_cached_ctx.TEX0.TBP0, m_cached_ctx.TEX0.PSM);
 		if (src_target)
 		{

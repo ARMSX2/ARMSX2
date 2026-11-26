@@ -395,6 +395,12 @@ void GSRendererHW::BurstMemoApply(const GSBurstMemo::Record& d)
 			invalidated_psm = PSMT8H;
 	}
 	BurstMemoInvalidate(context->FRAME.Block(), context->FRAME.FBW, invalidated_psm, bbox);
+	if (!m_deferred_scratch_copies.empty() || !m_scratch_mip_cache.empty())
+	{
+		const u32 fb_end_bp = GSLocalMemory::GetUnwrappedEndBlockAddress(
+			context->FRAME.Block(), context->FRAME.FBW, context->FRAME.PSM, bbox) + 1;
+		InvalidateDeferredScratchForWrite(context->FRAME.Block(), fb_end_bp);
+	}
 
 	GSUploadQueue uq;
 	uq.transfer_type = EEGS_TransferType::EE_to_GS;
@@ -727,6 +733,8 @@ u64 GSRendererHW::BurstMemoPaletteHash(u32 entries)
 
 bool GSRendererHW::BurstMemoTargetAt(u32 bp, u32 psm) const
 {
+	if (HasDeferredScratchAt(bp))
+		return true;
 	// Every target is indexed over its pages, so none in reach of the page means none at it.
 	if (!GSTextureCache::TargetsMayReach(bp, bp))
 		return false;
