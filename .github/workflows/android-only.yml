@@ -1,0 +1,37 @@
+name: Android only
+on:
+  push:
+    branches: [android-ci]
+  workflow_dispatch:
+
+jobs:
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: platforms/android
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - name: Install NDK + CMake
+        run: yes | sdkmanager "ndk;29.0.14206865" "cmake;3.31.6" >/dev/null || true
+      - name: Fetch shaderc deps
+        run: python3 app/src/main/cpp/3rdparty/shaderc/utils/git-sync-deps
+      - name: Rust Android target
+        run: rustup target add aarch64-linux-android
+      - name: Build debug APK
+        run: ./gradlew :app:assembleGithubDebug --stacktrace
+      - uses: actions/upload-artifact@v7
+        with:
+          name: nexus-launcher-android
+          path: platforms/android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: warn
