@@ -83,6 +83,11 @@ object DiscordPresence {
      *  stays well clear of it while still following the game within a few seconds. */
     private const val RA_REPUSH_SECONDS = 15
 
+    /** Polls (about a second each) connecting before the client is started again, and the most
+     *  that grows to while it keeps failing (a slow network still gets its chance). */
+    private const val STUCK_POLLS = 20
+    private const val STUCK_POLLS_MAX = 80
+
     /** Discord truncates a long state line; stay under it rather than being cut mid-word. */
     private const val RA_STATE_MAX = 126
 
@@ -111,8 +116,18 @@ object DiscordPresence {
     fun setForeground(fg: Boolean) {
         if (foreground.value == fg) return
         foreground.value = fg
+        // Back in sight: the poll below checks the connection straight away (see [backInSight]).
+        if (fg) backInSight = true
         sendIdle()
     }
+
+    /**
+     * Set when ARMSX2 comes back on screen. Out of sight, Android freezes the app and the helper
+     * and (Android 15 on the Odin 3) cuts their network a few seconds in, so Discord drops the
+     * connection and the status with it. The SDK then reconnects on its own schedule, or sits on a
+     * socket it has not noticed is dead, so the first poll back checks and repairs it at once.
+     */
+    @Volatile private var backInSight = false
 
     private fun sendIdle() =
         send(DiscordIpc.MSG_IDLE, Bundle().apply { putBoolean(DiscordIpc.DATA_IDLE, !foreground.value) })
@@ -486,6 +501,10 @@ object DiscordPresence {
         pollJob = scope.launch {
             var sinceRetry = 0
             var retryAfter = 5
+            // Polls spent connecting (or with a signed-in client that never started) without
+            // getting through, and how many to allow before building a fresh client.
+            var stuckFor = 0
+            var stuckLimit = STUCK_POLLS
             // RA rich presence changes AS YOU PLAY, unlike the game title -- so it cannot ride the
             // currentGame snapshotFlow alone. Re-checked here, but pushed only when the line really
             // changed and at most every RA_REPUSH_SECONDS: Discord rate-limits presence updates,
@@ -529,6 +548,37 @@ object DiscordPresence {
                 // Reconnect after a drop. The SDK does not retry, and its connection does not
                 // survive the app being backgrounded for long — swapping apps, or a device
                 // sleeping. MSG_START is idempotent in the helper, so it doubles as the retry.
+                val back = backInSight
+                backInSight = false
+                if (back && enabled && savedToken.isNotBlank()) {
+                    Log.i(TAG, "back in sight: status $s")
+                    when (s) {
+                        // Discord may have dropped the status while ARMSX2 was away, and a dead
+                        // socket the SDK still trusts shows itself on this write (it then
+                        // reconnects, and the helper re-sends the status once Discord is ready).
+                        CONNECTED -> pushPresence()
+                        // Reconnect now rather than after the usual wait.
+                        DISCONNECTED -> { retryAfter = 5; sinceRetry = retryAfter - 1 }
+                    }
+                }
+
+                // Connecting that never gets there (the SDK waiting out its own retry timer after
+                // the network came back), or a helper that never started its client: start over
+                // with a fresh client. The helper keeps the status to show and sends it once ready.
+                // A sign-in in progress reads Authorizing, so it is never cut short here.
+                val stuck = enabled && savedToken.isNotBlank() &&
+                    (s == CONNECTING || s == DISABLED && helperAvailable)
+                if (stuck && ++stuckFor >= stuckLimit) {
+                    stuckFor = 0
+                    stuckLimit = (stuckLimit * 2).coerceAtMost(STUCK_POLLS_MAX)
+                    Log.i(TAG, "stuck at status $s: starting the Discord client again")
+                    if (s == CONNECTING) send(DiscordIpc.MSG_STOP)
+                    send(DiscordIpc.MSG_START, savedSignIn())
+                } else if (!stuck) {
+                    stuckFor = 0
+                    if (s == CONNECTED) stuckLimit = STUCK_POLLS
+                }
+
                 if (s == DISCONNECTED && enabled && savedToken.isNotBlank()) {
                     if (++sinceRetry >= retryAfter) {
                         sinceRetry = 0
