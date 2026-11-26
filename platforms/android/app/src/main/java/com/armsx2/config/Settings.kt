@@ -781,8 +781,9 @@ data class GraphicsSettings(
     val shaderChainPreset: String = "",
     /** EmuCore/GS/ShaderChainScale: the share of full size the chain runs at, in percent. The
      *  game's picture is shrunk by it going in, and the chain's picture is scaled up from it to
-     *  the screen. 100 (full size) by default. */
-    val shaderChainScale: Int = 100,
+     *  the screen. 67 by default, about 0.44 of the pixels, which is what makes a heavy preset
+     *  playable on a phone GPU. The core's own default stays 100 for builds with no control for it. */
+    val shaderChainScale: Int = 67,
     /** EmuCore/GS/LsfgEnabled + /LsfgMultiplier + /LsfgDllPath — LSFG frame generation,
      *  inserted into the Vulkan present path. Off unless the user both enables it AND
      *  supplies their own Lossless.dll: the interpolation shaders are read out of that
