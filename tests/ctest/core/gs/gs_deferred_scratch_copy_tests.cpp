@@ -8,6 +8,7 @@
 #include "gs_hw_draw_harness.h"
 
 #include "GS/GSLocalMemory.h"
+#include "GS/Renderers/SW/GSVertexSW.h"
 
 #include <cstring>
 
@@ -72,6 +73,7 @@ namespace
 			GSConfig.UpscaleMultiplier = 1.0f;
 			GSConfig.HWMipmap = true;
 			GSConfig.TexturePreloading = TexturePreloadingLevel::Full;
+			GSVertexSW::InitStatic();
 			BringUp();
 		}
 
@@ -332,5 +334,138 @@ namespace
 		// Masked copy (FBMSK!=0) must execute immediately.
 		SendScratchSprite(*m_gs, SCRATCH_L1_PAGE, 1, 64, 64, SRC_TEX_C_BP, 1, PSMT8, 6, 6, false, 0xFF000000u);
 		EXPECT_EQ(m_counting->m_draws, 2u);
+	}
+
+	TEST_F(GSDeferredScratchCopy, SwPrimRenderMaterializesDeferredScratchSourceAndFrame)
+	{
+		SeedTextures();
+		m_counting->ResetCounts();
+
+		// Defer a 128x128 scratch unpack at SCRATCH_L0_PAGE.
+		SendScratchSprite(*m_gs, SCRATCH_L0_PAGE, 2, 128, 128, SRC_TEX_A_BP, 2, PSMT8, 7, 7);
+		EXPECT_EQ(m_counting->m_draws, 0u);
+		EXPECT_EQ(m_counting->m_stretch_rects + m_counting->m_copy_rects, 0u);
+
+		// Enable CPU sprite rendering (copy road): a sprite reading from SCRATCH_L0_PAGE must
+		// materialize the deferred target first so CanUseSwPrimRender sees the GPU target
+		// instead of reading stale local memory on the CPU.
+		GSConfig.UserHacks_CPUSpriteRenderBW = 4;
+		GSConfig.UserHacks_CPUSpriteRenderLevel = 0;
+		SendScratchSprite(*m_gs, SCRATCH_L1_PAGE, 1, 64, 64, SCRATCH_L0_PAGE << 5, 2, PSMCT32, 7, 7);
+		EXPECT_EQ(m_counting->m_stretch_rects + m_counting->m_copy_rects, 1u);
+		// Materializing SCRATCH_L0_PAGE makes it a real GPU target, so the copy to L1 draws on GPU.
+		EXPECT_EQ(m_counting->m_draws, 1u);
+
+		// Now defer a scratch copy at SCRATCH_L2_PAGE while CPUSpriteRenderBW is off, then re-enable
+		// CPUSpriteRenderBW and write to SCRATCH_L2_PAGE from a plain VRAM texture via SwPrimRender:
+		// MaterialiseHeldUnderCopy must materialize/invalidate the deferred entry first.
+		GSConfig.UserHacks_CPUSpriteRenderBW = 0;
+		m_counting->ResetCounts();
+		SendScratchSprite(*m_gs, SCRATCH_L2_PAGE, 1, 32, 32, SRC_TEX_C_BP, 1, PSMT8, 6, 6);
+		EXPECT_EQ(m_counting->m_draws, 0u);
+		EXPECT_EQ(m_counting->m_stretch_rects + m_counting->m_copy_rects, 0u);
+
+		GSConfig.UserHacks_CPUSpriteRenderBW = 4;
+		SendScratchSprite(*m_gs, SCRATCH_L2_PAGE, 1, 32, 32, SRC_TEX_C_BP, 1, PSMT8, 6, 6);
+		// Materialized before SwPrimRender wrote over SCRATCH_L2_PAGE; SwPrimRender itself did 0 GPU draws.
+		EXPECT_EQ(m_counting->m_stretch_rects + m_counting->m_copy_rects, 1u);
+		EXPECT_EQ(m_counting->m_draws, 0u);
+		GSConfig.UserHacks_CPUSpriteRenderBW = 0;
+	}
+
+	TEST_F(GSDeferredScratchCopy, HashCacheLimitsUnpinScratchMipCacheOnVSync)
+	{
+		SeedTextures();
+		m_counting->ResetCounts();
+
+		const GSTextureCache::HashCacheLimits saved_limits = GSTextureCache::GetHashCacheLimits();
+		auto invalidate_bp = [&](u32 bp) {
+			GIFRegBITBLTBUF blit = {};
+			blit.DBP = bp;
+			blit.DBW = 2;
+			blit.DPSM = PSMCT32;
+			m_gs->InvalidateVideoMem(blit, GSVector4i(0, 0, 16, 16));
+		};
+
+		// Populate and sample mip chains for textures A, B, and C so all 3 are pinned in m_scratch_mip_cache.
+		SendScratchSprite(*m_gs, SCRATCH_L0_PAGE, 2, 128, 128, SRC_TEX_A_BP, 2, PSMT8, 7, 7);
+		SendScratchSprite(*m_gs, SCRATCH_L1_PAGE, 1, 64, 64, SCRATCH_L0_PAGE << 5, 2, PSMCT32, 7, 7);
+		SendMainSample(*m_gs, SCRATCH_L1_PAGE << 5, 1, 6, 6);
+
+		SendScratchSprite(*m_gs, SCRATCH_L0_PAGE, 2, 128, 128, SRC_TEX_B_BP, 2, PSMT8, 7, 7);
+		SendScratchSprite(*m_gs, SCRATCH_L1_PAGE, 1, 64, 64, SCRATCH_L0_PAGE << 5, 2, PSMCT32, 7, 7);
+		SendMainSample(*m_gs, SCRATCH_L1_PAGE << 5, 1, 6, 6);
+
+		SendScratchSprite(*m_gs, SCRATCH_L0_PAGE, 1, 64, 64, SRC_TEX_C_BP, 1, PSMT8, 6, 6);
+		SendScratchSprite(*m_gs, SCRATCH_L1_PAGE, 1, 32, 32, SCRATCH_L0_PAGE << 5, 1, PSMCT32, 6, 6);
+		SendMainSample(*m_gs, SCRATCH_L1_PAGE << 5, 1, 5, 5);
+
+		// Drop m_src entries for A and B via VRAM writes so ONLY m_scratch_mip_cache pins their HashCacheEntries.
+		invalidate_bp(SRC_TEX_A_BP);
+		invalidate_bp(SRC_TEX_B_BP);
+		ASSERT_GE(g_texture_cache->GetHashCacheEntryCount(), 3u);
+
+		// Enforce tight hash cache limit (max_entries = 1): VSync must unpin A and B in AgeScratchMipCache()
+		// before IncAge() so the hash cache can actually evict them.
+		GSTextureCache::HashCacheLimits tight{};
+		tight.max_entries = 1;
+		tight.floor_entries = 0;
+		tight.max_bytes = 1;
+		GSTextureCache::SetHashCacheLimits(tight);
+
+		m_gs->AgeScratchMipCache();
+		g_texture_cache->IncAge();
+		const size_t after_count = g_texture_cache->GetHashCacheEntryCount();
+		GSTextureCache::SetHashCacheLimits(saved_limits);
+
+		// C is still held by m_deferred_scratch_copies and m_src; A and B were unpinned and evicted.
+		EXPECT_EQ(after_count, 1u);
+	}
+
+	TEST_F(GSDeferredScratchCopy, RetiringTargetAfterDateDrawRemainsValid)
+	{
+		SeedTextures();
+		m_counting->ResetCounts();
+
+		// Issue a DATE draw into SCRATCH_L0_PAGE to create a real target that may populate m_date_chain_rt.
+		{
+			Packet p;
+			Environment(p, SCRATCH_L0_PAGE, PSMCT32);
+			GIFReg r;
+			r.U64 = 0;
+			r.FRAME.FBP = SCRATCH_L0_PAGE;
+			r.FRAME.FBW = 2;
+			r.FRAME.PSM = PSMCT32;
+			p.Reg(GIF_A_D_REG_FRAME_1, r);
+			r.U64 = 0;
+			r.TEST.DATE = 1;
+			r.TEST.DATM = 0;
+			r.TEST.ZTE = 1;
+			r.TEST.ZTST = ZTST_ALWAYS;
+			p.Reg(GIF_A_D_REG_TEST_1, r);
+			r.U64 = 0;
+			r.RGBAQ.R = r.RGBAQ.G = r.RGBAQ.B = r.RGBAQ.A = 128;
+			r.RGBAQ.Q = 1.0f;
+			p.Reg(GIF_A_D_REG_RGBAQ, r);
+			p.Vertex(0, 0, 0, 0, 0);
+			p.Vertex(128 * 16, 128 * 16, 0, 0, 0);
+			GIFRegPRIM prim = {};
+			prim.PRIM = GS_SPRITE;
+			prim.ABE = 1;
+			p.Send(*m_gs, prim);
+		}
+		EXPECT_EQ(m_counting->m_draws, 1u);
+
+		// Three consecutive plain full-target scratch overwrites retire the target cleanly via RemoveTarget.
+		SendScratchSprite(*m_gs, SCRATCH_L0_PAGE, 2, 128, 128, SRC_TEX_A_BP, 2, PSMT8, 7, 7);
+		SendScratchSprite(*m_gs, SCRATCH_L0_PAGE, 2, 128, 128, SRC_TEX_B_BP, 2, PSMT8, 7, 7);
+		EXPECT_EQ(m_counting->m_draws, 3u);
+
+		SendScratchSprite(*m_gs, SCRATCH_L0_PAGE, 2, 128, 128, SRC_TEX_A_BP, 2, PSMT8, 7, 7);
+		EXPECT_EQ(m_counting->m_draws, 3u);
+
+		// A subsequent blended draw at SCRATCH_L0_PAGE materializes a fresh target without stale DATE state.
+		SendScratchSprite(*m_gs, SCRATCH_L0_PAGE, 2, 128, 128, SRC_TEX_B_BP, 2, PSMT8, 7, 7, true, 0);
+		EXPECT_EQ(m_counting->m_draws, 4u);
 	}
 } // namespace

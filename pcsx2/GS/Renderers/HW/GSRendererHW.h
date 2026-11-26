@@ -734,12 +734,23 @@ private:
 	void InvalidateDeferredScratchForWrite(u32 start_block, u32 end_block);
 	void MaterializeAllDeferredScratchCopies();
 	void EvictScratchMipCacheForRange(u32 start_block, u32 end_block);
-	void AgeScratchMipCache();
+	bool HasDeferredScratchAt(u32 bp) const
+	{
+		for (const DeferredScratchCopy& e : m_deferred_scratch_copies)
+		{
+			if (bp >= e.fbp && bp < e.end_block)
+				return true;
+		}
+		return false;
+	}
 	void DropAllDeferredScratchCopies()
 	{
 		m_deferred_scratch_copies.clear();
 		m_scratch_mip_cache.clear();
 	}
+public:
+	void AgeScratchMipCache();
+private:
 	bool BurstMemoPagesWrittenSince(const std::vector<u32>& pages, u64 seq) const;
 	u64 BurstMemoPaletteHash(u32 entries);
 	bool BurstMemoTargetAt(u32 bp, u32 psm) const;
