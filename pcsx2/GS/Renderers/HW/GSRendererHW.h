@@ -662,6 +662,84 @@ private:
 		if (m_burst_memo.pending_count)
 			BurstMemoFlushWaitingSlow();
 	}
+
+	// Deferred plain full-target PSMCT32 DECAL sprite copies (e.g. scratch palette unpack +
+	// mipmap chains): a 1:1 copy aliases directly to the cached VRAM Source on read without
+	// breaking the active render pass, and overwritten/unread downsample steps never hit the GPU.
+	// Any non-alias reader, overlapping write, readback, move, or display output materializes
+	// the exact chain on demand.
+	struct ScratchSourceDeleter
+	{
+		void operator()(GSTextureCache::Source* s) const;
+	};
+
+	struct HashCachePinDeleter
+	{
+		void operator()(GSTextureCache::HashCacheEntry* hc) const;
+	};
+	using HashCachePin = std::unique_ptr<GSTextureCache::HashCacheEntry, HashCachePinDeleter>;
+
+	struct DeferredScratchCopy
+	{
+		struct Step
+		{
+			GSVector2i size;
+			bool linear;
+			bool operator==(const Step&) const = default;
+		};
+		static constexpr size_t MAX_STEPS = 8;
+		static constexpr size_t MAX_ENTRIES = 16;
+
+		u32 fbp = 0;
+		u32 fbw = 0;
+		u32 end_block = 0;
+		GSVector2i dst_size{};
+		GSTextureCache::Source* root_src = nullptr;
+		std::shared_ptr<GSTextureCache::Source> detached_root;
+		u32 root_page_start = 0;
+		u32 root_page_end = 0;
+		bool linear = false;
+		std::array<Step, MAX_STEPS> steps{};
+		u8 step_count = 0;
+
+		bool IsIdentity() const { return step_count == 0; }
+		GSTextureCache::Source* ActiveRoot() const { return root_src ? root_src : detached_root.get(); }
+	};
+	std::vector<DeferredScratchCopy> m_deferred_scratch_copies;
+
+	// Cache of downsampled textures derived from DeferredScratchCopy chains, keyed by
+	// (root_hc or root_src, steps[0..step_count]). Hash-cached roots are content-addressed
+	// and pinned by refcount, so VRAM overwrites neither break the render pass nor evict mips.
+	struct ScratchMipCacheEntry
+	{
+		HashCachePin root_hc;
+		GSTextureCache::Source* root_src = nullptr;
+		u32 root_page_start = 0;
+		u32 root_page_end = 0;
+		std::array<DeferredScratchCopy::Step, DeferredScratchCopy::MAX_STEPS> steps{};
+		u8 step_count = 0;
+		u32 age = 0;
+		std::unique_ptr<GSTextureCache::Source, ScratchSourceDeleter> src;
+	};
+	static constexpr size_t MAX_SCRATCH_MIP_CACHE_ENTRIES = 256;
+	std::vector<ScratchMipCacheEntry> m_scratch_mip_cache;
+
+	bool TryDeferScratchCopy(bool no_rt, bool no_ds, bool& out_scratch_candidate);
+	bool TryResolveDeferredScratchAlias(const GIFRegTEX0& TEX0, const GSVector4i& coverage, bool possible_shuffle,
+		GSTextureCache::Source*& out_src);
+	GSTextureCache::Source* GetOrCreateScratchMipSource(const DeferredScratchCopy& entry);
+	void MaterializeDeferredScratchCopyAt(size_t index);
+	void MaterializeDeferredScratchCopiesForRange(u32 start_block, u32 end_block);
+	void DetachDeferredScratchRootsForRange(u32 start_block, u32 end_block);
+	void InvalidateDeferredScratchForWrite(u32 start_block, u32 end_block);
+	void MaterializeAllDeferredScratchCopies();
+	void EvictScratchMipCacheForRange(u32 start_block, u32 end_block);
+	void AgeScratchMipCache();
+	void DropAllDeferredScratchCopies()
+	{
+		m_deferred_scratch_copies.clear();
+		m_scratch_mip_cache.clear();
+	}
 	bool BurstMemoPagesWrittenSince(const std::vector<u32>& pages, u64 seq) const;
 	u64 BurstMemoPaletteHash(u32 entries);
 	bool BurstMemoTargetAt(u32 bp, u32 psm) const;
