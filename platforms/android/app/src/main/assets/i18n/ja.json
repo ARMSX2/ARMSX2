@@ -1822,6 +1822,8 @@
   "renderer.shaderChain.passesUnknown": "コスト不明",
   "renderer.shaderChain.preset.label": "シェーダープリセット",
   "renderer.shaderChain.preset.none": "なし",
+  "renderer.shaderChain.scale.description": "シェーダーを低い解像度で動かし、その画像を画面サイズへ拡大します。低いほど重いプリセットで大幅に速くなり、少し柔らかい見た目になります。",
+  "renderer.shaderChain.scale.label": "シェーダー解像度",
   "renderer.shaderChain.uncategorised": "未分類",
   "renderer.shaderPack.cancelled": "ダウンロードをキャンセルしました",
   "renderer.shaderPack.companion.description": "RetroArchパックのシェーダーを土台にした、既製のプリセットです。それ自体にはシェーダーが含まれていないため、先にRetroArchパックが必要で、その中にインストールされます。",

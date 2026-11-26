@@ -143,6 +143,8 @@ fun ShaderChainSection(
     onEnabledChange: (Boolean) -> Unit,
     onPresetChange: (String) -> Unit,
     onParamsChange: (Map<String, Map<String, Float>>) -> Unit,
+    scale: Int,
+    onScaleChange: (Int) -> Unit,
 ) {
     ToggleRow(
         str("renderer.shaderChain.label"),
@@ -162,9 +164,35 @@ fun ShaderChainSection(
         // section would be a row that opens onto an empty list.
         if (preset.isNotBlank()) {
             SettingsDivider()
+            ShaderScaleRow(scale, onScaleChange)
+            SettingsDivider()
             ShaderParamPicker(preset, params, onParamsChange, onPresetChange)
         }
     }
+}
+
+/** What Shader Resolution offers, in percent of full size; see Settings.shaderChainScale. */
+private val SHADER_SCALES = listOf(100, 75, 67, 50)
+
+/**
+ * The share of full size the chain runs at, the game's picture going in and the chain's coming
+ * out, before it is scaled up to the screen. Saved through the caller's tier like the rows above;
+ * the renderer reads it each frame.
+ */
+@Composable
+private fun ShaderScaleRow(scale: Int, onScaleChange: (Int) -> Unit) {
+    val change = androidx.compose.runtime.rememberUpdatedState(onScaleChange)
+    // A value set by hand in a config file shows as the nearest choice at or below it.
+    val index = SHADER_SCALES.indexOf(scale).takeIf { it >= 0 }
+        ?: SHADER_SCALES.indexOfFirst { it <= scale }.takeIf { it >= 0 }
+        ?: SHADER_SCALES.lastIndex
+    com.armsx2.ui.settings.SegmentedRow(
+        label = str("renderer.shaderChain.scale.label"),
+        options = SHADER_SCALES.map { "$it%" },
+        selectedIndex = index,
+        description = str("renderer.shaderChain.scale.description"),
+        field = "shaderChainScale",
+    ) { i -> change.value(SHADER_SCALES[i]) }
 }
 
 /**

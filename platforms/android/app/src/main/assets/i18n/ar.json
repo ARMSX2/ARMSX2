@@ -1822,6 +1822,8 @@
  "renderer.shaderChain.passesUnknown": "التكلفة غير معروفة",
  "renderer.shaderChain.preset.label": "الإعداد المسبق لـ Shader",
  "renderer.shaderChain.preset.none": "بلا",
+ "renderer.shaderChain.scale.description": "يشغّل التظليل بدقة أقل ثم يكبّر صورته إلى الشاشة. القيمة الأقل أسرع بكثير مع الإعدادات المسبقة الثقيلة وتبدو أنعم قليلا.",
+ "renderer.shaderChain.scale.label": "دقة التظليل",
  "renderer.shaderChain.uncategorised": "بلا تصنيف",
  "renderer.shaderPack.cancelled": "أُلغي التنزيل",
  "renderer.shaderPack.companion.description": "إعدادات مسبقة جاهزة مبنية فوق shaders الخاصة بحزمة RetroArch. تُثبَّت داخلها وتحتاجها أولاً، لأنها لا تحتوي على shaders خاصة بها.",

@@ -1804,6 +1804,9 @@ protected:
 	GSTexture* m_blend = nullptr;
 	GSTexture* m_mad = nullptr;
 	GSTexture* m_target_tmp = nullptr;
+	// The chain's input and output below 100% Shader Resolution (see ApplyShaderChain).
+	GSTexture* m_shader_chain_in = nullptr;
+	GSTexture* m_shader_chain_out = nullptr;
 	GSTexture* m_current = nullptr;
 	/// Whether the backend holds a chain, so ApplyShaderChain knows there is one to free.
 	bool m_shader_chain_loaded = false;

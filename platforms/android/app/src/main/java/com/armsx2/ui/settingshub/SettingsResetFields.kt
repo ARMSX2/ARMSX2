@@ -46,7 +46,7 @@ internal val SETTINGS_CATEGORY_FIELDS: Map<SettingsCategory, List<String>> = map
         "osdShowTextureReplacements", "portraitRenderTop", "landscapeRenderTop", "stretchY", "vrSideBySide", "vrSize", "vrDistance", "vrHeight", "autoProgressiveScan",
         "precacheTextureReplacements", "renderer",
         "shadeBoost", "shadeBoostBrightness", "shadeBoostContrast", "shadeBoostGamma",
-        "shadeBoostSaturation", "shaderChainEnabled", "shaderChainParams", "shaderChainPreset",
+        "shadeBoostSaturation", "shaderChainEnabled", "shaderChainParams", "shaderChainPreset", "shaderChainScale",
         "textureFiltering", "texturePreloading", "textureUpscale", "triFilter", "tvShader", "upscaleFloat",
         "upscaler", "useAngleOpenGL", "vsyncEnable",
     ),

@@ -1822,6 +1822,8 @@
  "renderer.shaderChain.passesUnknown": "开销未知",
  "renderer.shaderChain.preset.label": "着色器预设",
  "renderer.shaderChain.preset.none": "无",
+ "renderer.shaderChain.scale.description": "以较低的分辨率运行着色器，再将画面放大到屏幕。越低在重型预设下运行越快，画面会稍微柔和一些。",
+ "renderer.shaderChain.scale.label": "着色器分辨率",
  "renderer.shaderChain.uncategorised": "未分类",
  "renderer.shaderPack.cancelled": "下载已取消",
  "renderer.shaderPack.companion.description": "基于 RetroArch 素材包着色器制作的现成预设。它们会安装到该素材包中，且必须先安装该素材包，因为它们本身不含任何着色器。",

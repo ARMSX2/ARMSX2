@@ -1822,6 +1822,8 @@
  "renderer.shaderChain.passesUnknown": "ไม่ทราบต้นทุน",
  "renderer.shaderChain.preset.label": "Shader Preset",
  "renderer.shaderChain.preset.none": "ไม่มี",
+ "renderer.shaderChain.scale.description": "รันเชเดอร์ที่ความละเอียดต่ำลง แล้วขยายภาพให้เต็มจอ ค่าต่ำกว่าเร็วกว่ามากกับพรีเซ็ตที่หนัก และดูนุ่มลงเล็กน้อย",
+ "renderer.shaderChain.scale.label": "ความละเอียดเชเดอร์",
  "renderer.shaderChain.uncategorised": "ไม่มีหมวดหมู่",
  "renderer.shaderPack.cancelled": "ยกเลิกการดาวน์โหลด",
  "renderer.shaderPack.companion.description": "พรีเซ็ตสำเร็จรูปที่สร้างต่อยอดจากเชดเดอร์ของแพ็ก RetroArch ต้องติดตั้งแพ็กนั้นก่อน เพราะตัวมันเองไม่มีเชดเดอร์ในตัว",

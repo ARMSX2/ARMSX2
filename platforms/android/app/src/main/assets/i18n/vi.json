@@ -1822,6 +1822,8 @@
   "renderer.shaderChain.passesUnknown": "không rõ chi phí",
   "renderer.shaderChain.preset.label": "Shader Preset",
   "renderer.shaderChain.preset.none": "Không có",
+  "renderer.shaderChain.scale.description": "Chạy shader ở độ phân giải thấp hơn rồi phóng to hình ảnh ra màn hình. Thấp hơn nhanh hơn nhiều với các preset nặng và trông mềm hơn một chút.",
+  "renderer.shaderChain.scale.label": "Độ phân giải shader",
   "renderer.shaderChain.uncategorised": "Chưa phân loại",
   "renderer.shaderPack.cancelled": "Đã hủy tải xuống",
   "renderer.shaderPack.companion.description": "Các preset dựng sẵn, xây trên nền shader của gói RetroArch. Chúng cài vào gói đó và cần gói đó có trước, vì bản thân chúng không chứa shader riêng.",

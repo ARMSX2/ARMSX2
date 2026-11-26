@@ -629,6 +629,8 @@ fun RendererTab(state: MutableState<Settings>) {
                 onEnabledChange = { apply(s.copy(graphics = s.graphics.copy(shaderChainEnabled = it))) },
                 onPresetChange = { apply(s.copy(graphics = s.graphics.copy(shaderChainPreset = it))) },
                 onParamsChange = { apply(s.copy(graphics = s.graphics.copy(shaderChainParams = it))) },
+                scale = s.graphics.shaderChainScale,
+                onScaleChange = { apply(s.copy(graphics = s.graphics.copy(shaderChainScale = it))) },
             )
             SettingsDivider()
             // Where the presets above come from. Not a setting — it only puts files in

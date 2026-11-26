@@ -1514,6 +1514,8 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
         onEnabledChange = { on -> viewModel.updateSettings { it.copy(graphics = it.graphics.copy(shaderChainEnabled = on)) } },
         onPresetChange = { path -> viewModel.updateSettings { it.copy(graphics = it.graphics.copy(shaderChainPreset = path)) } },
         onParamsChange = { next -> viewModel.updateSettings { it.copy(graphics = it.graphics.copy(shaderChainParams = next)) } },
+        scale = settings.graphics.shaderChainScale,
+        onScaleChange = { pct -> viewModel.updateSettings { it.copy(graphics = it.graphics.copy(shaderChainScale = pct)) } },
     )
     com.armsx2.ui.common.ShaderManagerSection()
 }

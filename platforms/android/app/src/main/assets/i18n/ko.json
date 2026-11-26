@@ -1822,6 +1822,8 @@
  "renderer.shaderChain.passesUnknown": "비용 알 수 없음",
  "renderer.shaderChain.preset.label": "셰이더 프리셋",
  "renderer.shaderChain.preset.none": "없음",
+ "renderer.shaderChain.scale.description": "셰이더를 더 낮은 해상도로 실행한 뒤 그 화면을 디스플레이 크기로 확대합니다. 낮을수록 무거운 프리셋에서 훨씬 빠르고 약간 부드러워 보입니다.",
+ "renderer.shaderChain.scale.label": "셰이더 해상도",
  "renderer.shaderChain.uncategorised": "미분류",
  "renderer.shaderPack.cancelled": "다운로드를 취소했습니다",
  "renderer.shaderPack.companion.description": "RetroArch 팩의 셰이더를 기반으로 만든 완성된 프리셋입니다. 자체 셰이더는 포함되어 있지 않으므로 RetroArch 팩이 먼저 필요하며, 그 안에 설치됩니다.",

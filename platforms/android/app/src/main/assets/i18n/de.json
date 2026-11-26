@@ -1725,6 +1725,8 @@
  "renderer.shaderChain.passesUnknown": "Kosten unbekannt",
  "renderer.shaderChain.preset.label": "Shader-Preset",
  "renderer.shaderChain.preset.none": "Keines",
+ "renderer.shaderChain.scale.description": "Lässt den Shader in geringerer Auflösung laufen und skaliert sein Bild dann auf den Bildschirm hoch. Niedriger ist bei aufwendigen Voreinstellungen viel schneller und wirkt etwas weicher.",
+ "renderer.shaderChain.scale.label": "Shader-Auflösung",
  "renderer.shaderChain.uncategorised": "Ohne Kategorie",
  "renderer.shaderPack.cancelled": "Download abgebrochen",
  "renderer.shaderPack.companion.description": "Fertige Presets, die auf den Shadern des RetroArch-Pakets aufbauen. Sie werden in dieses Paket installiert und setzen es voraus, da sie selbst keine Shader enthalten.",

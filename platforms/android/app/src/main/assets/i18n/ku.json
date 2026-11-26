@@ -1854,6 +1854,8 @@
   "renderer.shaderChain.passesUnknown": "lêçûn nenas e",
   "renderer.shaderChain.preset.label": "Preset a Shader",
   "renderer.shaderChain.preset.none": "Netû",
+  "renderer.shaderChain.scale.description": "Shader bi rezolûsyoneke kêmtir dimeşîne, paşê wêneya wê li ser dîmenderê mezin dike. Kêmtir bi presetên giran pir zûtir e û hinekî nermtir xuya dike.",
+  "renderer.shaderChain.scale.label": "Rezolûsyona shader",
   "renderer.shaderChain.uncategorised": "Bêkategorî",
   "renderer.shaderPack.cancelled": "Dakêşan hate betalkirin",
   "renderer.shaderPack.companion.description": "Preset-ên amade ku li ser shader-ên pakêta RetroArch hatine avakirin. Ew tê de saz dibin û pêşî hewceyê wê ne, çimkî ew bi xwe ti shader tune ne.",

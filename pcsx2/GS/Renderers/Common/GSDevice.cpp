@@ -1454,6 +1454,8 @@ void GSDevice::ClearCurrent()
 	delete m_blend;
 	delete m_mad;
 	delete m_target_tmp;
+	delete m_shader_chain_in;
+	delete m_shader_chain_out;
 	delete m_cas;
 	delete m_mfx_output;
 	delete m_fsr1_easu;
@@ -1465,6 +1467,8 @@ void GSDevice::ClearCurrent()
 	m_blend = nullptr;
 	m_mad = nullptr;
 	m_target_tmp = nullptr;
+	m_shader_chain_in = nullptr;
+	m_shader_chain_out = nullptr;
 	m_cas = nullptr;
 	m_mfx_output = nullptr;
 	m_fsr1_easu = nullptr;
@@ -1582,6 +1586,10 @@ bool GSDevice::ApplyShaderChain(const GSVector2i& output_size)
 	{
 		ReleaseShaderChain();
 		m_shader_chain_loaded = false;
+		delete m_shader_chain_in;
+		delete m_shader_chain_out;
+		m_shader_chain_in = nullptr;
+		m_shader_chain_out = nullptr;
 	}
 	if (!wanted || !m_current)
 		return false;
@@ -1597,10 +1605,30 @@ bool GSDevice::ApplyShaderChain(const GSVector2i& output_size)
 	if (!ResizeRenderTarget(&dTex, output_size.x, output_size.y, false, false))
 		return false;
 
+	// Shader Resolution: below 100%, the chain runs that much smaller at both ends. The game's
+	// frame is shrunk into it going in, it draws into an image that much smaller than the screen,
+	// and that image is stretched to the screen. Presets run passes at a multiple of their source,
+	// so the saving compounds: at 67% the chain draws about 0.44 of the pixels.
+	GSTexture* chain_in = m_current;
+	GSTexture* chain_out = dTex;
+	const int scale = std::clamp(GSConfig.ShaderChainScale, 25, 100);
+	if (scale < 100)
+	{
+		const auto shrink = [scale](int size) { return std::max(1, size * scale / 100); };
+		if (!ResizeRenderTarget(&m_shader_chain_in, shrink(m_current->GetWidth()), shrink(m_current->GetHeight()), false, false) ||
+			!ResizeRenderTarget(&m_shader_chain_out, shrink(output_size.x), shrink(output_size.y), false, false))
+			return false;
+		StretchRect(m_current, m_shader_chain_in, ShaderConvert::COPY, Biln);
+		chain_in = m_shader_chain_in;
+		chain_out = m_shader_chain_out;
+	}
+
 	// Only swap on success — a failed chain (bad preset, unsupported backend) must leave
 	// m_current pointing at the unshaded frame rather than at a target nothing rendered to.
-	if (!DoApplyShaderChain(m_current, dTex))
+	if (!DoApplyShaderChain(chain_in, chain_out))
 		return false;
+	if (chain_out != dTex)
+		StretchRect(chain_out, dTex, ShaderConvert::COPY, Biln);
 
 	m_shader_chain_loaded = true;
 	m_current = dTex;

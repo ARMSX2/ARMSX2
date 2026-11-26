@@ -1869,6 +1869,8 @@ private val BASE_EN: Map<String, String> = mapOf(
     "renderer.shadeboost.fiftyIsNormal" to "50 is normal.",
     "renderer.shadeboost.label" to "Shadeboost",
     "renderer.shaderChain.description" to "Runs a RetroArch (.slangp) shader chain over the final image: CRT masks, handheld LCD looks, scalers. Costs GPU time and stacks on top of the other display effects.",
+    "renderer.shaderChain.scale.label" to "Shader Resolution",
+    "renderer.shaderChain.scale.description" to "Runs the shader at a lower resolution, then scales its picture up to the screen. Lower is much faster with heavy presets and looks a little softer.",
     "renderer.shaderChain.empty" to "No .slangp presets found. Download a pack under Shader Packs below, or drop one into this folder by hand and reopen this list:",
     "renderer.shaderChain.scanning" to "Scanning for presets…",
     "renderer.shaderChain.folder.up" to "Up one folder",

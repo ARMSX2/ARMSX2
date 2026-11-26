@@ -1817,6 +1817,8 @@
   "renderer.shaderChain.passesUnknown": "coût inconnu",
   "renderer.shaderChain.preset.label": "Préréglage de shader",
   "renderer.shaderChain.preset.none": "Aucun",
+  "renderer.shaderChain.scale.description": "Fait tourner le shader à une résolution plus basse, puis agrandit son image à l'écran. Plus bas est bien plus rapide avec les préréglages lourds et un peu plus doux.",
+  "renderer.shaderChain.scale.label": "Résolution du shader",
   "renderer.shaderChain.uncategorised": "Non classé",
   "renderer.shaderPack.cancelled": "Téléchargement annulé",
   "renderer.shaderPack.companion.description": "Préréglages prêts à l'emploi construits à partir des shaders du pack RetroArch. Ils s'installent dedans et en ont besoin au préalable, car ils ne contiennent aucun shader propre.",

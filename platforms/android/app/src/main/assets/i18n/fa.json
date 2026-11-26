@@ -1855,6 +1855,8 @@
  "renderer.shaderChain.passesUnknown": "هزینه نامشخص",
  "renderer.shaderChain.preset.label": "پیش‌تنظیم سایه‌زن",
  "renderer.shaderChain.preset.none": "هیچ‌کدام",
+ "renderer.shaderChain.scale.description": "سایه‌زن را با وضوح کمتر اجرا می‌کند و سپس تصویرش را تا اندازه صفحه بزرگ می‌کند. مقدار کمتر با پیش‌تنظیم‌های سنگین بسیار سریع‌تر است و کمی نرم‌تر دیده می‌شود.",
+ "renderer.shaderChain.scale.label": "وضوح سایه‌زن",
  "renderer.shaderChain.uncategorised": "بدون دسته‌بندی",
  "renderer.shaderPack.cancelled": "دانلود لغو شد",
  "renderer.shaderPack.companion.description": "پیش‌تنظیم‌های آماده که بر پایه سایه‌زن‌های بسته RetroArch ساخته شده‌اند. این‌ها داخل آن نصب می‌شوند و ابتدا به آن نیاز دارند، چون خودشان هیچ سایه‌زنی ندارند.",

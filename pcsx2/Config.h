@@ -1108,6 +1108,8 @@ struct Pcsx2Config
 		// and it's a no-op on renderers/builds without a librashader backend.
 		bool ShaderChainEnabled = false;
 		std::string ShaderChainPreset;
+		// The share of full size, in percent, the chain runs at (GSDevice::ApplyShaderChain).
+		int ShaderChainScale = 100;
 
 		// LSFG — Lossless Scaling frame generation, inserted into the Vulkan present path.
 		// Off unless the user both enables it AND supplies their own Lossless.dll: the

@@ -1822,6 +1822,8 @@
  "renderer.shaderChain.passesUnknown": "koszt nieznany",
  "renderer.shaderChain.preset.label": "Preset shadera",
  "renderer.shaderChain.preset.none": "Brak",
+ "renderer.shaderChain.scale.description": "Uruchamia shader w niższej rozdzielczości, a potem skaluje jego obraz do ekranu. Niższa jest dużo szybsza przy ciężkich ustawieniach i wygląda nieco łagodniej.",
+ "renderer.shaderChain.scale.label": "Rozdzielczość shadera",
  "renderer.shaderChain.uncategorised": "Bez kategorii",
  "renderer.shaderPack.cancelled": "Anulowano pobieranie",
  "renderer.shaderPack.companion.description": "Gotowe presety zbudowane na bazie shaderów paczki RetroArch. Instalują się do niej i wymagają jej wcześniej, ponieważ same nie zawierają żadnych shaderów.",

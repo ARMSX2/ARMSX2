@@ -1822,6 +1822,8 @@
  "renderer.shaderChain.passesUnknown": "開銷未知",
  "renderer.shaderChain.preset.label": "Shader 預設",
  "renderer.shaderChain.preset.none": "無",
+ "renderer.shaderChain.scale.description": "以較低的解析度執行著色器，再將畫面放大到螢幕。越低在重型預設下執行越快，畫面會稍微柔和一些。",
+ "renderer.shaderChain.scale.label": "著色器解析度",
  "renderer.shaderChain.uncategorised": "未分類",
  "renderer.shaderPack.cancelled": "下載已取消",
  "renderer.shaderPack.companion.description": "基於 RetroArch 素材包 Shader 製作的現成預設。它們會安裝到該素材包中，且必須先安裝該素材包，因為它們本身不含任何 Shader。",

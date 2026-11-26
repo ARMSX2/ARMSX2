@@ -1822,6 +1822,8 @@
   "renderer.shaderChain.passesUnknown": "biaya tidak diketahui",
   "renderer.shaderChain.preset.label": "Shader Preset",
   "renderer.shaderChain.preset.none": "Tidak ada",
+  "renderer.shaderChain.scale.description": "Menjalankan shader pada resolusi lebih rendah, lalu memperbesar gambarnya ke layar. Lebih rendah jauh lebih cepat untuk preset berat dan sedikit lebih lembut.",
+  "renderer.shaderChain.scale.label": "Resolusi Shader",
   "renderer.shaderChain.uncategorised": "Tanpa kategori",
   "renderer.shaderPack.cancelled": "Unduhan dibatalkan",
   "renderer.shaderPack.companion.description": "Preset siap pakai yang dibangun di atas shader dari pack RetroArch. Preset ini terpasang ke dalamnya dan membutuhkannya lebih dulu, karena tidak punya shader sendiri.",

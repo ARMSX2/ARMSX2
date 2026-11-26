@@ -960,6 +960,7 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
 
 		OpEqu(ShaderChainEnabled) &&
 		OpEqu(ShaderChainPreset) &&
+		OpEqu(ShaderChainScale) &&
 
 		OpEqu(LsfgEnabled) &&
 		OpEqu(LsfgMultiplier) &&
@@ -1241,6 +1242,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 
 	SettingsWrapEntryEx(ShaderChainEnabled, "ShaderChainEnabled");
 	SettingsWrapEntryEx(ShaderChainPreset, "ShaderChainPreset");
+	SettingsWrapEntryEx(ShaderChainScale, "ShaderChainScale");
 
 	SettingsWrapEntryEx(LsfgEnabled, "LsfgEnabled");
 	// Bitfield, not Entry: LsfgMultiplier is a u8, and the plain entry wrapper has no

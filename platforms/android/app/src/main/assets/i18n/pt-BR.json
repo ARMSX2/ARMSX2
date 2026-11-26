@@ -1927,6 +1927,8 @@
  "renderer.shaderChain.passesUnknown": "custo desconhecido",
  "renderer.shaderChain.preset.label": "Predefinição de sombreador",
  "renderer.shaderChain.preset.none": "Nenhum",
+ "renderer.shaderChain.scale.description": "Executa o shader em uma resolução menor e depois amplia a imagem para a tela. Menor é muito mais rápido com predefinições pesadas e fica um pouco mais suave.",
+ "renderer.shaderChain.scale.label": "Resolução do shader",
  "renderer.shaderChain.uncategorised": "Sem categoria",
  "renderer.shaderPack.cancelled": "Download cancelado",
  "renderer.shaderPack.companion.description": "Predefinições prontas construídas sobre os shaders do pacote RetroArch. Eles são instalados nele e precisam dele primeiro, pois não contêm shaders próprios.",

@@ -1854,6 +1854,8 @@
   "renderer.shaderChain.passesUnknown": "стоимость неизвестна",
   "renderer.shaderChain.preset.label": "Пресет шейдера",
   "renderer.shaderChain.preset.none": "Нет",
+  "renderer.shaderChain.scale.description": "Запускает шейдер в меньшем разрешении, а затем растягивает его изображение на экран. Ниже значит намного быстрее на тяжёлых пресетах и чуть мягче.",
+  "renderer.shaderChain.scale.label": "Разрешение шейдера",
   "renderer.shaderChain.uncategorised": "Без категории",
   "renderer.shaderPack.cancelled": "Загрузка отменена",
   "renderer.shaderPack.companion.description": "Готовые пресеты, построенные на шейдерах пака RetroArch. Они устанавливаются поверх него и требуют его заранее, так как собственных шейдеров не содержат.",

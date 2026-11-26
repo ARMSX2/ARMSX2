@@ -1822,6 +1822,8 @@
  "renderer.shaderChain.passesUnknown": "maliyet bilinmiyor",
  "renderer.shaderChain.preset.label": "Shader Preset'i",
  "renderer.shaderChain.preset.none": "Yok",
+ "renderer.shaderChain.scale.description": "Gölgelendiriciyi daha düşük çözünürlükte çalıştırır, ardından görüntüsünü ekrana büyütür. Düşük değer ağır ön ayarlarda çok daha hızlıdır ve biraz daha yumuşak görünür.",
+ "renderer.shaderChain.scale.label": "Gölgelendirici Çözünürlüğü",
  "renderer.shaderChain.uncategorised": "Kategorisiz",
  "renderer.shaderPack.cancelled": "İndirme iptal edildi",
  "renderer.shaderPack.companion.description": "RetroArch paketinin shader'ları üzerine kurulmuş hazır preset'ler. Onun içine yüklenir ve önce onu gerektirir, çünkü kendi shader'larını içermezler.",
