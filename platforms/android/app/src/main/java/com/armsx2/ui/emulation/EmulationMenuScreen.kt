@@ -13,9 +13,14 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitLongPressOrCancellation
+import androidx.compose.foundation.gestures.awaitTouchSlopOrCancellation
+import androidx.compose.foundation.gestures.drag
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.unit.toSize
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -2235,7 +2240,6 @@ private fun SessionArrangeView(order: List<String>, labels: Map<String, Pair<Str
     }
 }
 
-@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun ArrangeRow(key: String, glyph: String, title: String) {
     val lifted = SessionOrder.lifted == key
@@ -2243,75 +2247,79 @@ private fun ArrangeRow(key: String, glyph: String, title: String) {
     val selected = com.armsx2.ui.settings.SettingsControllerNav.isSelected(id)
     val scroll = com.armsx2.ui.settings.LocalSettingsScrollState.current
     val scope = rememberCoroutineScope()
-    val density = androidx.compose.ui.platform.LocalDensity.current
     val bring = remember { BringIntoViewRequester() }
     // A row moved with the controller stays in sight as it goes past the fold. Not a dragged one:
     // scrolling the list under the finger would move the row again, and again.
     val index = SessionOrder.indexOf(key)
     LaunchedEffect(lifted, index) { if (lifted && SessionOrder.movedByPad) runCatching { bring.bringIntoView() } }
 
-    // The finger in root coordinates, worked out from the row's position NOW rather than by
-    // adding up drag deltas: the row itself moves as it is reordered, which shows up in its
-    // local deltas as finger movement that never happened.
-    var bounds by remember { mutableStateOf(androidx.compose.ui.geometry.Rect.Zero) }
-    val dragModifier = Modifier.pointerInput(key) {
-        var fingerY = 0f
-        var edgeScroll: kotlinx.coroutines.Job? = null
-        fun place() {
-            val others = SessionOrder.arrangedKeys().filter { it != key }
-            val target = others.count { k -> (SessionOrder.rowBounds[k]?.center?.y ?: Float.MAX_VALUE) < fingerY }
-            SessionOrder.moveTo(key, target)
-        }
-        fun end() {
-            edgeScroll?.cancel()
-            edgeScroll = null
-            SessionOrder.drop()
-        }
-        detectDragGesturesAfterLongPress(
-            onDragStart = { at ->
-                SessionOrder.lift(key)
-                fingerY = bounds.top + at.y
-                // Near the top or bottom of the visible part of the tab, scroll it, so a row can
-                // be taken past the fold.
-                val edge = with(density) { 44.dp.toPx() }
-                val stepPx = with(density) { 7.dp.toPx() }
-                edgeScroll = scope.launch(Dispatchers.Main) {
-                    while (true) {
-                        val view = SessionOrder.viewport
-                        if (scroll != null && view != null) {
-                            val step = when {
-                                fingerY < view.top + edge -> -stepPx
-                                fingerY > view.bottom - edge -> stepPx
-                                else -> 0f
-                            }
-                            if (step != 0f && scroll.dispatchRawDelta(step) != 0f) place()
-                        }
-                        delay(16)
-                    }
+    // The row's top in root coordinates, unclipped: boundsInRoot is cut to the visible part of the
+    // list, so a row partly scrolled out reported the wrong top and a drag on it jumped.
+    val rowTop = remember { FloatArray(1) }
+    val drag = Modifier.pointerInput(key) {
+        val handleWidth = 52.dp.toPx()
+        val edge = 44.dp.toPx()
+        val stepPx = 7.dp.toPx()
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false)
+            // One gesture per touch. On the handle the row moves as soon as it is dragged; on the rest
+            // of the row only after a hold, so a plain drag there still scrolls the list.
+            val start = (
+                if (down.position.x >= size.width - handleWidth) {
+                    awaitTouchSlopOrCancellation(down.id) { change, _ -> change.consume() }
+                } else {
+                    awaitLongPressOrCancellation(down.id)
                 }
-            },
-            onDrag = { change, _ ->
-                change.consume()
-                fingerY = bounds.top + change.position.y
+                ) ?: return@awaitEachGesture
+            var fingerY = rowTop[0] + start.position.y
+            fun place() {
+                val others = SessionOrder.arrangedKeys().filter { it != key }
+                val target = others.count { k -> (SessionOrder.rowBounds[k]?.center?.y ?: Float.MAX_VALUE) < fingerY }
+                SessionOrder.moveTo(key, target)
+            }
+            SessionOrder.lift(key)
+            // Near the top or bottom of the visible part of the tab, scroll it, so a row can be taken
+            // past the fold.
+            val edgeScroll = scope.launch(Dispatchers.Main) {
+                while (true) {
+                    val view = SessionOrder.viewport
+                    if (scroll != null && view != null) {
+                        val step = when {
+                            fingerY < view.top + edge -> -stepPx
+                            fingerY > view.bottom - edge -> stepPx
+                            else -> 0f
+                        }
+                        if (step != 0f && scroll.dispatchRawDelta(step) != 0f) place()
+                    }
+                    delay(16)
+                }
+            }
+            try {
                 place()
-            },
-            onDragEnd = { end() },
-            onDragCancel = { end() },
-        )
+                drag(start.id) { change ->
+                    change.consume()
+                    fingerY = rowTop[0] + change.position.y
+                    place()
+                }
+            } finally {
+                edgeScroll.cancel()
+                SessionOrder.drop()
+            }
+        }
     }
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .bringIntoViewRequester(bring)
             .onGloballyPositioned {
-                val b = it.boundsInRoot()
-                bounds = b
-                SessionOrder.rowBounds[key] = b
+                val p = it.positionInRoot()
+                rowTop[0] = p.y
+                SessionOrder.rowBounds[key] = androidx.compose.ui.geometry.Rect(p, it.size.toSize())
             }
             .controllerFocusable(id, onConfirm = {
                 if (SessionOrder.lifted == key) SessionOrder.drop() else SessionOrder.lift(key)
             })
-            .then(dragModifier),
+            .then(drag),
         shape = RoundedCornerShape(16.dp),
         color = when {
             lifted -> MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
@@ -2341,31 +2349,8 @@ private fun ArrangeRow(key: String, glyph: String, title: String) {
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
-            // The handle: dragging it moves the row at once, where the rest of the row scrolls
-            // the list and moves the row only after a hold.
-            Box(
-                Modifier
-                    .size(40.dp)
-                    .pointerInput(key) {
-                        var fingerY = 0f
-                        detectDragGestures(
-                            onDragStart = { at ->
-                                SessionOrder.lift(key)
-                                fingerY = bounds.top + at.y
-                            },
-                            onDrag = { change, _ ->
-                                change.consume()
-                                fingerY = bounds.top + (bounds.height - size.height) / 2f + change.position.y
-                                val others = SessionOrder.arrangedKeys().filter { it != key }
-                                val target = others.count { k -> (SessionOrder.rowBounds[k]?.center?.y ?: Float.MAX_VALUE) < fingerY }
-                                SessionOrder.moveTo(key, target)
-                            },
-                            onDragEnd = { SessionOrder.drop() },
-                            onDragCancel = { SessionOrder.drop() },
-                        )
-                    },
-                contentAlignment = Alignment.Center,
-            ) {
+            // The handle: the row's drag above treats a touch on this end as a grab at once.
+            Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
                 Text("≡", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 22.sp, fontWeight = FontWeight.Bold)
             }
         }
