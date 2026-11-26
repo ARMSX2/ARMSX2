@@ -1956,7 +1956,7 @@ private fun AchievementsPane(state: EmulationMenuUiState, viewModel: EmulationMe
                         LaunchedEffect(Unit) { com.armsx2.RaLibrary.refreshRetroPoints() }
                         if (retroPoints >= 0) {
                             Text(
-                                "  ·  $retroPoints RP",
+                                "  ·  $retroPoints RetroPoints",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurface,
                             )

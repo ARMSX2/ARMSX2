@@ -100,7 +100,7 @@ fun AchievementsScreen(onBack: () -> Unit, viewModel: AchievementsViewModel = vi
                         StatusChip("${state.softcoreScore} SC")
                         val retroPoints = com.armsx2.RaLibrary.retroPoints.longValue
                         LaunchedEffect(Unit) { com.armsx2.RaLibrary.refreshRetroPoints() }
-                        if (retroPoints >= 0) StatusChip("$retroPoints RP", Color.White)
+                        if (retroPoints >= 0) StatusChip("$retroPoints RetroPoints", Color.White)
                         RoundAction("↻", str("games.card.refresh"), {
                             viewModel.refresh()
                             com.armsx2.RaLibrary.refreshRetroPoints(force = true)
