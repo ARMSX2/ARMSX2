@@ -57,6 +57,7 @@ import com.armsx2.ui.common.ArmsTopBar
 import com.armsx2.ui.common.GlassPanel
 import com.armsx2.ui.common.RoundAction
 import com.armsx2.ui.common.SectionTitle
+import com.armsx2.ui.settings.swipeBetweenTabs
 import com.armsx2.ui.settings.controllerFocusable
 import com.armsx2.ui.settings.AppTab
 import com.armsx2.ui.settings.AudioTab
@@ -203,6 +204,8 @@ fun SettingsScreen(
             Column(
                 Modifier
                     .fillMaxSize()
+                    // Swipe sideways for the next or previous section, as the shoulder buttons do.
+                    .swipeBetweenTabs { SettingsCategoryNav.cycle?.invoke(it) }
                     .verticalScroll(screenScroll)
                     .padding(bottom = 8.dp),
             ) {

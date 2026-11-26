@@ -13,6 +13,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
@@ -357,6 +358,8 @@ fun SearchField(
     modifier: Modifier = Modifier,
     placeholder: String = "",
     selected: Boolean = false,
+    // Shown as a ✕ while there is a search, to end it in one tap.
+    onClear: (() -> Unit)? = null,
 ) {
     Surface(
         onClick = onClick,
@@ -378,7 +381,21 @@ fun SearchField(
                 fontSize = 16.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
             )
+            if (onClear != null && value.isNotEmpty()) {
+                val clearLabel = com.armsx2.i18n.str("games.search.clear")
+                Box(
+                    Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .clickable(onClick = onClear)
+                        .semantics { contentDescription = clearLabel },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("✕", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
         }
     }
 }

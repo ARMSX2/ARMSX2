@@ -9,6 +9,24 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -893,12 +911,9 @@ fun IntSliderRow(
                         )
                     }
                 }
-                Text(
-                    valueFormatter(value),
-                    color = MaterialTheme.colorScheme.primary,
-                    fontSize = 17.sp,
-                    fontWeight = FontWeight.Bold,
-                )
+                TypeableSliderValue(valueFormatter(value)) { typed ->
+                    sliderStepForTyped(typed, min, max, valueFormatter)?.let { if (it != value) onChangeSfx(it) }
+                }
                 if (onReset != null) {
                     Spacer(Modifier.width(10.dp))
                     // Its own Surface rather than a registry row: the controller reaches
@@ -920,14 +935,176 @@ fun IntSliderRow(
                 }
             }
             Spacer(Modifier.height(8.dp))
-            DiscreteSlider(
-                value = value,
-                min = min,
-                max = max,
-                onChange = onChangeSfx,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SliderStepArrow(SLIDER_DOWN_GLYPH, str("common.decrease"), enabled = value > min) {
+                    if (value > min) onChangeSfx(value - 1)
+                }
+                DiscreteSlider(
+                    value = value,
+                    min = min,
+                    max = max,
+                    onChange = onChangeSfx,
+                    modifier = Modifier.weight(1f),
+                )
+                SliderStepArrow(SLIDER_UP_GLYPH, str("common.increase"), enabled = value < max) {
+                    if (value < max) onChangeSfx(value + 1)
+                }
+            }
         }
     }
+}
+
+/** A sideways swipe moves to the next or previous tab: [onSwipe] gets 1 for a swipe to the left
+ *  (the next tab) and -1 for one to the right. A slider or a row that scrolls sideways takes the
+ *  drag first and keeps it, and a vertical drag is left to the page's scroll. Once a swipe is ours
+ *  it is consumed, which also stops the row it started on from taking it as a tap. */
+internal fun Modifier.swipeBetweenTabs(onSwipe: (Int) -> Unit): Modifier = composed {
+    val latest by rememberUpdatedState(onSwipe)
+    pointerInput(Unit) {
+        val slop = viewConfiguration.touchSlop
+        val distance = 72.dp.toPx()
+        awaitEachGesture {
+            val pointer = awaitFirstDown(requireUnconsumed = false).id
+            var dx = 0f
+            var dy = 0f
+            var mode = 0 // 0 undecided, 1 a swipe between tabs, 2 someone else's
+            while (true) {
+                val change = awaitPointerEvent(PointerEventPass.Main).changes.firstOrNull { it.id == pointer } ?: break
+                if (!change.pressed) break
+                if (mode == 0 && change.isConsumed) mode = 2
+                val d = change.positionChange()
+                dx += d.x
+                dy += d.y
+                if (mode == 0 && (abs(dx) > slop || abs(dy) > slop)) mode = if (abs(dx) > abs(dy) * 1.5f) 1 else 2
+                if (mode == 1) change.consume()
+            }
+            if (mode == 1 && abs(dx) >= distance) latest(if (dx < 0) 1 else -1)
+        }
+    }
+}
+
+internal const val SLIDER_DOWN_GLYPH = "‹"
+internal const val SLIDER_UP_GLYPH = "›"
+
+/** One step down or up, at either end of a slider's track: landing the thumb on an exact value is
+ *  fiddly on a small screen. Holding the arrow keeps stepping. Not a controller stop of its own,
+ *  since left and right on the slider row already step. */
+@Composable
+internal fun SliderStepArrow(glyph: String, description: String, enabled: Boolean, onStep: () -> Unit) {
+    val latestOnStep by rememberUpdatedState(onStep)
+    val color = MaterialTheme.colorScheme.primary
+    Box(
+        modifier = Modifier
+            .size(34.dp)
+            .clip(CircleShape)
+            .semantics {
+                contentDescription = description
+                role = Role.Button
+            }
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    awaitFirstDown().consume()
+                    latestOnStep()
+                    // A tap is one step; held past the first pause, it steps until released.
+                    var wait = 420L
+                    while (true) {
+                        val released = withTimeoutOrNull(wait) { waitForUpOrCancellation(); true } ?: false
+                        if (released) break
+                        latestOnStep()
+                        wait = 70L
+                    }
+                }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            glyph,
+            color = if (enabled) color else color.copy(alpha = 0.32f),
+            fontSize = 26.sp,
+            lineHeight = 26.sp,
+            fontWeight = FontWeight.Bold,
+        )
+    }
+}
+
+/** A slider's value, which can be tapped to type one. [onSubmit] gets the text as typed; the
+ *  slider decides what it means (see [sliderStepForTyped]). */
+@Composable
+internal fun TypeableSliderValue(text: String, onSubmit: (String) -> Unit) {
+    val color = MaterialTheme.colorScheme.primary
+    var editing by remember { mutableStateOf(false) }
+    if (!editing) {
+        Text(
+            text,
+            color = color,
+            fontSize = 17.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .clickable { editing = true }
+                .padding(horizontal = 4.dp, vertical = 2.dp),
+        )
+    } else {
+        val start = remember { firstNumberIn(text)?.let(::plainNumber).orEmpty() }
+        var field by remember { mutableStateOf(TextFieldValue(start, TextRange(0, start.length))) }
+        val focus = remember { FocusRequester() }
+        val keyboard = LocalSoftwareKeyboardController.current
+        var hadFocus by remember { mutableStateOf(false) }
+        val finish = {
+            if (editing) {
+                editing = false
+                keyboard?.hide()
+                onSubmit(field.text)
+            }
+        }
+        LaunchedEffect(Unit) { focus.requestFocus() }
+        BasicTextField(
+            value = field,
+            onValueChange = { field = it },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(onDone = { finish() }),
+            textStyle = TextStyle(color = color, fontSize = 17.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.End),
+            cursorBrush = SolidColor(color),
+            modifier = Modifier
+                .width(92.dp)
+                .focusRequester(focus)
+                .onFocusChanged { if (it.isFocused) hadFocus = true else if (hadFocus) finish() }
+                .border(1.5.dp, color, RoundedCornerShape(8.dp))
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+        )
+    }
+}
+
+/** The first number in a slider label ("59.94 Hz" is 59.94, "2×" is 2), or null for one with
+ *  none ("Off"). A decimal comma counts, since labels are formatted in the user's locale. */
+internal fun firstNumberIn(text: String): Double? =
+    Regex("-?\\d+(?:[.,]\\d+)?").find(text)?.value?.replace(',', '.')?.toDoubleOrNull()
+
+private fun plainNumber(d: Double): String = if (d % 1.0 == 0.0) d.toLong().toString() else d.toString()
+
+/** The step of [min]..[max] whose label shows the number typed, or the closest one, so a value is
+ *  typed in the units the slider shows rather than its internal step. A step labelled without a
+ *  number ("Off", "Unlimited") is chosen by typing its label, or a number past that end. */
+internal fun sliderStepForTyped(typed: String, min: Int, max: Int, format: (Int) -> String): Int? {
+    val text = typed.trim()
+    if (text.isEmpty()) return null
+    val number = firstNumberIn(text)
+        ?: return (min..max).firstOrNull { format(it).equals(text, ignoreCase = true) }
+    var best: Int? = null
+    var bestDistance = Double.MAX_VALUE
+    var lowest = Double.MAX_VALUE
+    var highest = -Double.MAX_VALUE
+    for (step in min..max) {
+        val shown = firstNumberIn(format(step)) ?: continue
+        lowest = minOf(lowest, shown)
+        highest = maxOf(highest, shown)
+        val distance = abs(shown - number)
+        if (distance < bestDistance) { best = step; bestDistance = distance }
+    }
+    if (number < lowest && firstNumberIn(format(min)) == null) return min
+    if (number > highest && firstNumberIn(format(max)) == null) return max
+    return best
 }
 
 /** Custom slim discrete slider. Canvas-drawn so we don't have to fight

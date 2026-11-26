@@ -120,6 +120,7 @@ private val BASE_SEARCH_INDEX: List<SettingsSearchEntry> = listOf(
     SettingsSearchEntry("renderer.cas.sharpness.label", true, SettingsCategory.Graphics, listOf("renderer.section.displayEffects")),
     SettingsSearchEntry("renderer.displayMode.label", true, SettingsCategory.Graphics, listOf("renderer.section.displayResolution")),
     SettingsSearchEntry("renderer.fmvAspect.label", true, SettingsCategory.Graphics, listOf("renderer.section.displayResolution")),
+    SettingsSearchEntry("renderer.stretchY.label", true, SettingsCategory.Graphics, listOf("renderer.section.displayResolution")),
     SettingsSearchEntry("renderer.orientation.label", true, SettingsCategory.Graphics, listOf("renderer.section.displayResolution")),
     SettingsSearchEntry("renderer.portraitPosition.label", true, SettingsCategory.Graphics, listOf("renderer.section.displayResolution")),
     SettingsSearchEntry("renderer.vr.label", true, SettingsCategory.Graphics, listOf("renderer.section.displayResolution")),

@@ -94,10 +94,17 @@ fun AchievementsScreen(onBack: () -> Unit, viewModel: AchievementsViewModel = vi
                                 contentScale = ContentScale.Crop,
                             )
                         }
-                        // Both totals: hardcore points (red) and softcore points (blue).
+                        // Both totals: hardcore points (red) and softcore points (blue), then
+                        // RetroPoints (white, as RA shows them) when a Web API key is set.
                         StatusChip("${state.score} HC", Danger)
                         StatusChip("${state.softcoreScore} SC")
-                        RoundAction("↻", str("games.card.refresh"), viewModel::refresh)
+                        val retroPoints = com.armsx2.RaLibrary.retroPoints.longValue
+                        LaunchedEffect(Unit) { com.armsx2.RaLibrary.refreshRetroPoints() }
+                        if (retroPoints >= 0) StatusChip("$retroPoints RP", Color.White)
+                        RoundAction("↻", str("games.card.refresh"), {
+                            viewModel.refresh()
+                            com.armsx2.RaLibrary.refreshRetroPoints(force = true)
+                        })
                     }
                 },
             )

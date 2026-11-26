@@ -1591,6 +1591,37 @@ open class MainActivityRuntime : ComponentActivity() {
          *  (the in-game menu) to the Activity-scoped ActivityResult launcher; the
          *  picker + native swap were intact but had no trigger after the monorepo
          *  UI migration, so Swap Disc silently did nothing. */
+        /** Puts [uri] in the drive of the running game: from the file picker, or from the discs
+         *  of this game in the library (DiscSwap). */
+        fun swapDiscTo(uri: String) {
+            // Swap the mounted disc instead of rebooting. The old path
+            // (restart()) booted the picked disc as a fresh VM, which
+            // dropped CodeBreaker/multi-disc hand-offs and never showed
+            // a "disc changed" notification. NativeApp.changeDisc keeps
+            // the running VM, cycles the tray so the game detects the
+            // new disc, and emits the on-screen "Disc changed to …" OSD.
+            // Runs off-thread since it parks the CPU thread and blocks.
+            println("@@ANDROID_SWAP_DISC@@ uri=${uri.take(240)}")
+            kotlin.concurrent.thread {
+                val ok = runCatching { NativeApp.changeDisc(uri) }.getOrDefault(false)
+                instance?.runOnUiThread {
+                    if (ok) {
+                        com.armsx2.ui.emulation.DiscSwap.noteMounted(uri)
+                        // changeDisc parks the VM to swap on the CPU
+                        // thread; unpause so the game runs and detects
+                        // the new disc (otherwise the screen sits frozen
+                        // on the paused frame).
+                        resume()
+                    } else {
+                        // Swap Disc is swap-only. If native rejected
+                        // the image it already restored the old disc,
+                        // so just resume the existing session.
+                        resume()
+                    }
+                }
+            }
+        }
+
         fun promptSwapDisc() {
             val activity = instance ?: return
             val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
@@ -2256,33 +2287,7 @@ open class MainActivityRuntime : ComponentActivity() {
             try {
                 val intent = result.data
                 val uri = intent?.dataString ?: ""
-                if (uri.isNotEmpty()) {
-                    // Swap the mounted disc instead of rebooting. The old path
-                    // (restart()) booted the picked disc as a fresh VM, which
-                    // dropped CodeBreaker/multi-disc hand-offs and never showed
-                    // a "disc changed" notification. NativeApp.changeDisc keeps
-                    // the running VM, cycles the tray so the game detects the
-                    // new disc, and emits the on-screen "Disc changed to …" OSD.
-                    // Runs off-thread since it parks the CPU thread and blocks.
-                    println("@@ANDROID_SWAP_DISC@@ uri=${uri.take(240)}")
-                    kotlin.concurrent.thread {
-                        val ok = runCatching { NativeApp.changeDisc(uri) }.getOrDefault(false)
-                        instance?.runOnUiThread {
-                            if (ok) {
-                                // changeDisc parks the VM to swap on the CPU
-                                // thread; unpause so the game runs and detects
-                                // the new disc (otherwise the screen sits frozen
-                                // on the paused frame).
-                                resume()
-                            } else {
-                                // Swap Disc is swap-only. If native rejected
-                                // the image it already restored the old disc,
-                                // so just resume the existing session.
-                                resume()
-                            }
-                        }
-                    }
-                }
+                if (uri.isNotEmpty()) swapDiscTo(uri)
             } catch (_: Exception) { }
         }
     }

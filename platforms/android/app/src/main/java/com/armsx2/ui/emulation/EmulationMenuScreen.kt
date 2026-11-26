@@ -12,6 +12,14 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import com.armsx2.ui.settings.swipeBetweenTabs
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -31,6 +39,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.relocation.BringIntoViewRequester
@@ -87,6 +96,8 @@ import kotlin.math.roundToInt
 
 /** The Friends panel's nav layer: only its controls answer the pad while it is open. */
 private const val FRIENDS_NAV_LAYER = "menu.friends"
+private const val PEEK_NAV_LAYER = "menu.peek"
+private const val DISCS_NAV_LAYER = "menu.discs"
 
 @Composable
 fun EmulationMenuScreen(viewModel: EmulationMenuViewModel = viewModel()) {
@@ -95,6 +106,53 @@ fun EmulationMenuScreen(viewModel: EmulationMenuViewModel = viewModel()) {
     var shown by remember { mutableStateOf(false) }
     var dismissing by remember { mutableStateOf(false) }
     var friendsOpen by remember { mutableStateOf(false) }
+    // The menu set aside, the game still paused: to read what is on screen behind the panel.
+    // The rail stays (wide layout) and a Show menu pill brings the panel back, as do tapping the
+    // game, a rail tab, B, or A on the pill.
+    var peeking by remember { mutableStateOf(false) }
+    var selectedBeforePeek by remember { mutableStateOf<String?>(null) }
+    val peek: () -> Unit = {
+        selectedBeforePeek = com.armsx2.ui.settings.SettingsControllerNav.currentSelectedId()
+        peeking = true
+    }
+    val unpeek: () -> Unit = {
+        if (peeking) {
+            peeking = false
+            selectedBeforePeek?.let { com.armsx2.ui.settings.SettingsControllerNav.focusWhenRegistered(null, it) }
+        }
+    }
+    DisposableEffect(peeking) {
+        if (!peeking) return@DisposableEffect onDispose {}
+        EmulationMenuInputController.overlayDismiss = unpeek
+        com.armsx2.ui.settings.SettingsControllerNav.pushLayer(PEEK_NAV_LAYER)
+        onDispose {
+            EmulationMenuInputController.overlayDismiss = null
+            com.armsx2.ui.settings.SettingsControllerNav.popLayer(PEEK_NAV_LAYER)
+        }
+    }
+    val discChoices by DiscSwap.choices
+    val choosingDisc = discChoices != null
+    DisposableEffect(choosingDisc) {
+        if (!choosingDisc) return@DisposableEffect onDispose {}
+        EmulationMenuInputController.overlayDismiss = DiscSwap::close
+        com.armsx2.ui.settings.SettingsControllerNav.pushLayer(DISCS_NAV_LAYER)
+        onDispose {
+            EmulationMenuInputController.overlayDismiss = null
+            com.armsx2.ui.settings.SettingsControllerNav.popLayer(DISCS_NAV_LAYER)
+        }
+    }
+    LaunchedEffect(choosingDisc) {
+        if (choosingDisc) {
+            delay(260)
+            if (DiscSwap.choices.value != null) com.armsx2.ui.settings.SettingsControllerNav.selectFirstInLayer()
+        }
+    }
+    LaunchedEffect(peeking) {
+        if (peeking) {
+            delay(220)
+            if (peeking) com.armsx2.ui.settings.SettingsControllerNav.selectFirstInLayer()
+        }
+    }
     // A friend waiting to be let in is answered in the hosting panel, which sits with Friends: the
     // menu opens there, whether it was opened for the question or was already open.
     val hostStatus by com.armsx2.remoteplay.RemotePlayHost.status
@@ -131,6 +189,7 @@ fun EmulationMenuScreen(viewModel: EmulationMenuViewModel = viewModel()) {
         onDispose {
             viewModel.dismissHandler = null
             EmulationMenuInputController.unbind(viewModel)
+            SessionOrder.finishArranging()
         }
     }
     LaunchedEffect(Unit) { shown = true }
@@ -164,7 +223,15 @@ fun EmulationMenuScreen(viewModel: EmulationMenuViewModel = viewModel()) {
     // Back closes the friends overlay first when it is up. Without this, opening Friends and
     // pressing Back would dismiss the entire pause menu and resume the game, which is not what
     // anyone means by "go back" from a panel sitting on top of another panel.
-    BackHandler(onBack = { if (friendsOpen) friendsOpen = false else closeMenu() })
+    BackHandler(onBack = {
+        when {
+            DiscSwap.choices.value != null -> DiscSwap.close()
+            peeking -> unpeek()
+            friendsOpen -> friendsOpen = false
+            SessionOrder.arranging -> SessionOrder.finishArranging()
+            else -> closeMenu()
+        }
+    })
 
     state.pendingHardcore?.let { enabling ->
         androidx.compose.runtime.DisposableEffect(Unit) {
@@ -195,7 +262,7 @@ fun EmulationMenuScreen(viewModel: EmulationMenuViewModel = viewModel()) {
             EmulationMenuInputController.tabsHorizontal.value = compact
         }
         AnimatedVisibility(
-            visible = shown,
+            visible = shown && !peeking,
             enter = fadeIn(tween(190, easing = EaseOut)),
             exit = fadeOut(tween(190, easing = EaseIn)),
         ) {
@@ -204,6 +271,19 @@ fun EmulationMenuScreen(viewModel: EmulationMenuViewModel = viewModel()) {
                     .fillMaxSize()
                     .background(Color.Black.copy(alpha = 0.62f))
                     .clickable(onClick = closeMenu),
+            )
+        }
+        // Peeking: the game is all there is to see, and touching it brings the menu back rather
+        // than closing it.
+        if (peeking) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .clickable(
+                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                        indication = null,
+                        onClick = unpeek,
+                    ),
             )
         }
         // Right edge by default, left when the user asks for it. Everything that encodes
@@ -219,7 +299,7 @@ fun EmulationMenuScreen(viewModel: EmulationMenuViewModel = viewModel()) {
             modifier = Modifier.align(if (menuLeft) Alignment.CenterStart else Alignment.CenterEnd),
         ) {
             if (compact) {
-                Surface(
+                if (!peeking) Surface(
                     modifier = Modifier
                         .fillMaxHeight()
                         .fillMaxWidth(0.96f)
@@ -236,6 +316,7 @@ fun EmulationMenuScreen(viewModel: EmulationMenuViewModel = viewModel()) {
                         compact = true,
                         modifier = Modifier.fillMaxSize(),
                         onOpenFriends = { friendsOpen = true },
+                        onPeek = peek,
                     )
                 }
             } else {
@@ -253,7 +334,9 @@ fun EmulationMenuScreen(viewModel: EmulationMenuViewModel = viewModel()) {
                         ),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    Surface(
+                    if (peeking) {
+                        Spacer(Modifier.weight(1f))
+                    } else Surface(
                         modifier = Modifier.weight(1f).fillMaxHeight(),
                         shape = RoundedCornerShape(28.dp),
                         color = MaterialTheme.colorScheme.surface,
@@ -266,6 +349,7 @@ fun EmulationMenuScreen(viewModel: EmulationMenuViewModel = viewModel()) {
                             compact = false,
                             modifier = Modifier.fillMaxSize(),
                             onOpenFriends = { friendsOpen = true },
+                            onPeek = peek,
                         )
                     }
                     Surface(
@@ -275,7 +359,108 @@ fun EmulationMenuScreen(viewModel: EmulationMenuViewModel = viewModel()) {
                         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
                         shadowElevation = 18.dp,
                     ) {
-                        MenuRail(state.tab, viewModel::selectTab)
+                        MenuRail(state.tab) { tab -> unpeek(); viewModel.selectTab(tab) }
+                    }
+                }
+            }
+        }
+
+        // Show menu, while peeking: at the top on the menu's side, clear of the rail in the wide
+        // layout. The one controller stop while the panel is away.
+        AnimatedVisibility(
+            visible = shown && peeking,
+            enter = fadeIn(tween(160, easing = EaseOut)),
+            exit = fadeOut(tween(120, easing = EaseIn)),
+            modifier = Modifier.align(if (menuLeft) Alignment.TopStart else Alignment.TopEnd),
+        ) {
+            androidx.compose.runtime.CompositionLocalProvider(
+                com.armsx2.ui.settings.LocalNavLayer provides PEEK_NAV_LAYER,
+            ) {
+                val inset = if (compact) 12.dp else 12.dp + 76.dp + 10.dp
+                Surface(
+                    onClick = unpeek,
+                    modifier = Modifier
+                        .windowInsetsPadding(WindowInsets.safeDrawing)
+                        .padding(
+                            top = 14.dp,
+                            start = if (menuLeft) inset else 0.dp,
+                            end = if (menuLeft) 0.dp else inset,
+                        )
+                        .controllerFocusable("menu.peek.show", RoundedCornerShape(16.dp), onConfirm = unpeek),
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
+                    shadowElevation = 12.dp,
+                ) {
+                    Row(
+                        Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text("☰", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                        Text(str("menu.peek.show"), style = MaterialTheme.typography.labelLarge)
+                    }
+                }
+            }
+        }
+
+        // Swap Disc's chooser: this game's other discs, over the menu as Friends is, and for the
+        // same reason (a Dialog's own window would take the pad away from the menu).
+        AnimatedVisibility(
+            visible = choosingDisc,
+            enter = fadeIn(tween(160, easing = EaseOut)),
+            exit = fadeOut(tween(140, easing = EaseIn)),
+        ) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.72f))
+                    .clickable { DiscSwap.close() },
+            )
+        }
+        AnimatedVisibility(
+            visible = choosingDisc,
+            enter = fadeIn(tween(190, easing = EaseOut)),
+            exit = fadeOut(tween(150, easing = EaseIn)),
+            modifier = Modifier.align(Alignment.Center),
+        ) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth(if (compact) 0.94f else 0.6f)
+                    .widthIn(max = 620.dp)
+                    .heightIn(max = maxHeight * 0.9f)
+                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Vertical)),
+                shape = RoundedCornerShape(24.dp),
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
+                shadowElevation = 24.dp,
+            ) {
+                Column(
+                    Modifier.verticalScroll(rememberScrollState()).padding(start = 12.dp, end = 12.dp, bottom = 14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    androidx.compose.runtime.CompositionLocalProvider(
+                        com.armsx2.ui.settings.LocalNavLayer provides DISCS_NAV_LAYER,
+                    ) {
+                        Row(
+                            Modifier.fillMaxWidth().padding(start = 4.dp, top = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(str("action.swapDisc"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                Text(
+                                    str("action.swapDisc.detail"),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            TextButton(
+                                onClick = DiscSwap::close,
+                                modifier = Modifier.controllerFocusable("menu.discs.close", onConfirm = DiscSwap::close),
+                            ) { Text(str("action.close")) }
+                        }
+                        discChoices.orEmpty().forEachIndexed { index, game -> DiscChoiceRow(game, "menu.disc.$index") }
+                        DiscChoiceBrowse()
                     }
                 }
             }
@@ -365,6 +550,7 @@ private fun MenuPage(
     compact: Boolean,
     modifier: Modifier,
     onOpenFriends: () -> Unit,
+    onPeek: () -> Unit,
 ) {
     val tabScrollStates = remember {
         EmulationMenuTab.entries.associateWith {
@@ -386,13 +572,18 @@ private fun MenuPage(
     androidx.compose.runtime.CompositionLocalProvider(
         com.armsx2.ui.settings.LocalSettingsScrollState provides scrollState,
     ) {
+        // The arrange view belongs to the first tab; leaving the tab closes it, keeping the order.
+        LaunchedEffect(state.tab) { if (state.tab != EmulationMenuTab.Session) SessionOrder.finishArranging() }
         Column(
             modifier
+                .onGloballyPositioned { SessionOrder.viewport = it.boundsInRoot() }
+                // Swipe sideways for the next or previous tab, as well as tapping the rail.
+                .swipeBetweenTabs { viewModel.cycleTab(it) }
                 .verticalScroll(scrollState)
                 .padding(bottom = 18.dp),
         ) {
             if (compact) CompactMenuTabs(state.tab, viewModel::selectTab)
-            MenuHeader(compact, state.hardcore, state.richPresence, state.gameCRC, onOpenFriends)
+            MenuHeader(compact, state.hardcore, state.richPresence, state.gameCRC, onOpenFriends, onPeek)
             HorizontalDivider(
                 modifier = Modifier.padding(horizontal = 8.dp),
                 color = MaterialTheme.colorScheme.outline.copy(alpha = 0.34f),
@@ -566,6 +757,7 @@ private fun MenuHeader(
     richPresence: String,
     gameCRC: String,
     onOpenFriends: () -> Unit,
+    onPeek: () -> Unit,
 ) {
     val game = MainActivityRuntime.currentGame.value
     Row(
@@ -645,6 +837,24 @@ private fun MenuHeader(
             Modifier.align(Alignment.CenterVertically),
         )
 
+        // Hide the menu to see the game behind it, still paused, for text that leaves the screen
+        // too quickly to read any other way.
+        Spacer(Modifier.width(8.dp))
+        val peekLabel = str("menu.peek")
+        Surface(
+            onClick = onPeek,
+            modifier = Modifier
+                .controllerFocusable("menu.peek", RoundedCornerShape(14.dp), onConfirm = onPeek)
+                .semantics { contentDescription = peekLabel },
+            shape = RoundedCornerShape(14.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
+        ) {
+            Box(Modifier.padding(horizontal = 11.dp, vertical = 9.dp)) {
+                Text("👁", fontSize = 19.sp)
+            }
+        }
+
         // Friends, in the header where it is always visible, with the online count on it. Shown
         // even where Discord is not available: remote play hosting lives behind it too, and
         // hosting does not need Discord. The Discord parts inside hide themselves there.
@@ -670,49 +880,108 @@ private fun MenuHeader(
     }
 }
 
+private const val CARD_SAVES = "card.saveSlots"
+private const val CARD_SCREEN = "card.onScreen"
+
 @Composable
 private fun SessionPane(state: EmulationMenuUiState, viewModel: EmulationMenuViewModel) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val gsDumpQueued = str("gsdump.quick.queued")
-    ActionGrid(
-        actions = listOf(
-            MenuAction(str("action.resume"), str("action.play"), "▶", Success, viewModel::resume),
-            MenuAction(
-                str("action.fastForward"),
-                if (MainActivityRuntime.fastForwardToggleActive) str("action.fastForward.on") else str("action.fastForward.detail"),
-                "⏩",
-                if (MainActivityRuntime.fastForwardToggleActive) Success else null,
-            ) { MainActivityRuntime.instance?.toggleFastForward(); viewModel.resume() },
-            MenuAction(str("memcard.restart"), str("action.reset"), "↻", null, MainActivityRuntime::restart),
-            MenuAction(str("action.swapDisc"), str("action.swapDisc.detail"), "⏏", null, MainActivityRuntime::promptSwapDisc),
-            // Here and not only in Settings > Renderer, where it sat at the bottom of a long page:
-            // a GS dump is what gets asked for when someone reports a graphics bug, and this is
-            // one tap from the game. It also resumes, because the dump is of the NEXT frame the GS
-            // draws, and none is drawn while this menu holds the game paused.
-            //
-            // It is now a choice: keep the dump in the snaps folder as before, or start a problem
-            // report with a fresh dump of this scene.
-            MenuAction(str("renderer.gsDump.label"), str("gsdump.quick.detail"), "⧉", null) {
-                com.armsx2.ui.bugreport.askGsDumpChoice {
-                    runCatching { kr.co.iefriends.pcsx2.NativeApp.captureGsDump(1) }
-                    android.widget.Toast.makeText(context, gsDumpQueued, android.widget.Toast.LENGTH_LONG).show()
-                    viewModel.resume()
-                }
-            },
-            // Best place to report graphics and slowness: the scene is still here to capture.
-            MenuAction(str("bugreport.menu.title"), str("bugreport.menu.detail"), "⚑", null) {
-                com.armsx2.ui.bugreport.BugReportFlow.openInGame(context)
-            },
-        ) + arcadeActions(viewModel) + listOf(
-            MenuAction(str("action.close"), MainActivityRuntime.currentGame.value?.title.orEmpty(), "■", Danger) {
-                MainActivityRuntime.closeGame()
-            },
-        ),
+    val actions = listOf(
+        MenuAction(str("action.resume"), str("action.play"), "▶", Success, key = "resume", action = viewModel::resume),
+        // Saving and loading right under Resume: with them only in the slot card at the
+        // bottom of this tab, every save meant scrolling past the whole on-screen card.
+        MenuAction(str("savestate.title.save"), str("savestate.action.save.detail"), "↥", null, key = "saveState") {
+            com.armsx2.ui.WindowImpl.openInGameScreen(com.armsx2.ui.InGameScreen.SaveState)
+        },
+        MenuAction(str("savestate.title.load"), str("savestate.action.load.detail"), "↧", null, key = "loadState") {
+            com.armsx2.ui.WindowImpl.openInGameScreen(com.armsx2.ui.InGameScreen.LoadState)
+        },
+        MenuAction(
+            str("action.fastForward"),
+            if (MainActivityRuntime.fastForwardToggleActive) str("action.fastForward.on") else str("action.fastForward.detail"),
+            "⏩",
+            if (MainActivityRuntime.fastForwardToggleActive) Success else null,
+            key = "fastForward",
+        ) { MainActivityRuntime.instance?.toggleFastForward(); viewModel.resume() },
+        MenuAction(str("memcard.restart"), str("action.reset"), "↻", null, key = "restart", action = MainActivityRuntime::restart),
+        MenuAction(str("action.swapDisc"), str("action.swapDisc.detail"), "⏏", null, key = "swapDisc", action = DiscSwap::open),
+        // Here and not only in Settings > Renderer, where it sat at the bottom of a long page:
+        // a GS dump is what gets asked for when someone reports a graphics bug, and this is
+        // one tap from the game. It also resumes, because the dump is of the NEXT frame the GS
+        // draws, and none is drawn while this menu holds the game paused.
+        //
+        // It is now a choice: keep the dump in the snaps folder as before, or start a problem
+        // report with a fresh dump of this scene.
+        MenuAction(str("renderer.gsDump.label"), str("gsdump.quick.detail"), "⧉", null, key = "gsDump") {
+            com.armsx2.ui.bugreport.askGsDumpChoice {
+                runCatching { kr.co.iefriends.pcsx2.NativeApp.captureGsDump(1) }
+                android.widget.Toast.makeText(context, gsDumpQueued, android.widget.Toast.LENGTH_LONG).show()
+                viewModel.resume()
+            }
+        },
+        // Best place to report graphics and slowness: the scene is still here to capture.
+        MenuAction(str("bugreport.menu.title"), str("bugreport.menu.detail"), "⚑", null, key = "bugReport") {
+            com.armsx2.ui.bugreport.BugReportFlow.openInGame(context)
+        },
+    ) + arcadeActions(viewModel) + listOf(
+        MenuAction(str("action.close"), MainActivityRuntime.currentGame.value?.title.orEmpty(), "■", Danger, key = "close") {
+            MainActivityRuntime.closeGame()
+        },
     )
+    val savesTitle = str("savestate.title.loadManage")
+    val screenTitle = str("tab.overlay")
+    val order = SessionOrder.ordered(actions.map { it.key } + listOf(CARD_SAVES, CARD_SCREEN))
+    if (SessionOrder.arranging) {
+        val labels = actions.associate { it.key to (it.glyph to it.title) } +
+            mapOf(CARD_SAVES to ("↥" to savesTitle), CARD_SCREEN to ("▣" to screenTitle))
+        SessionArrangeView(order, labels)
+    } else {
+        // Runs of actions stay one tight list; the cards sit between the runs, wherever the
+        // player has put them.
+        val byKey = actions.associateBy { it.key }
+        val segments = buildList<Any> {
+            var run = mutableListOf<MenuAction>()
+            order.forEach { key ->
+                val action = byKey[key]
+                if (action != null) {
+                    run.add(action)
+                } else {
+                    if (run.isNotEmpty()) { add(run); run = mutableListOf() }
+                    add(key)
+                }
+            }
+            if (run.isNotEmpty()) add(run)
+        }
+        segments.forEach { segment ->
+            if (segment is List<*>) {
+                @Suppress("UNCHECKED_CAST")
+                val run = segment as List<MenuAction>
+                androidx.compose.runtime.key("run:${run.first().key}") { ActionGrid(run) }
+            } else {
+                androidx.compose.runtime.key(segment) {
+                    when (segment) {
+                        CARD_SAVES -> SaveSlotsCard(state, viewModel)
+                        CARD_SCREEN -> OnScreenCard(state, viewModel)
+                    }
+                }
+            }
+        }
+        // The controller's way in: holding a row is touch only.
+        CompactAction(str("menu.arrange.title"), "⇅", Modifier.fillMaxWidth()) {
+            SessionOrder.startArranging()
+            com.armsx2.ui.settings.SettingsControllerNav.focusWhenRegistered(null, "pause.arrange.${order.first()}")
+        }
+    }
+}
+
+@Composable
+private fun OnScreenCard(state: EmulationMenuUiState, viewModel: EmulationMenuViewModel) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     // On-screen display — a single universal on/off (old-UI style); the per-stat
     // toggles live in All Settings. Plus a frame-limit switch so fast-forward is one
     // tap away.
-    SectionCard(str("tab.overlay")) {
+    SectionCard(str("tab.overlay"), onTitleLongPress = { SessionOrder.startArranging(CARD_SCREEN) }) {
         // #357: the pause button replaced the settings cog, so it's front-and-centre here. This is
         // "tap to reveal", NOT show/hide: on = the glyph stays hidden until you tap its top-right
         // corner, which surfaces it. Either way that corner always opens this menu, so unlike the
@@ -801,7 +1070,11 @@ private fun SessionPane(state: EmulationMenuUiState, viewModel: EmulationMenuVie
             valueLabel = str(if (menuSide) "overlay.quickMenuSide.left" else "overlay.quickMenuSide.right"),
         ) { _ -> com.armsx2.ui.QuickMenuSide.set(!menuSide) }
     }
-    SectionCard(str("savestate.title.loadManage")) {
+}
+
+@Composable
+private fun SaveSlotsCard(state: EmulationMenuUiState, viewModel: EmulationMenuViewModel) {
+    SectionCard(str("savestate.title.loadManage"), onTitleLongPress = { SessionOrder.startArranging(CARD_SAVES) }) {
         // When each slot was last written. Ten chips numbered 1..10 say nothing about which
         // hold anything or how old they are, so picking a slot to overwrite after a long
         // session was guesswork -- the Save Manager has had the dates all along, but the quick
@@ -1154,6 +1427,18 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
     MenuSwitchRow(str("fixes.integerScaling.label"), settings.hwFixes.integerScaling, field = "integerScaling") {
         viewModel.updateSettings { current -> current.copy(hwFixes = current.hwFixes.copy(integerScaling = it)) }
     }
+    com.armsx2.ui.settings.IntSliderRow(
+        label = str("renderer.stretchY.label"),
+        value = settings.output.stretchY.coerceIn(10, 300),
+        min = 10,
+        max = 300,
+        valueFormatter = { "$it%" },
+        onReset = if (settings.output.stretchY != 100) {
+            { viewModel.updateSettings { current -> current.copy(output = current.output.copy(stretchY = 100)) } }
+        } else null,
+        field = "stretchY",
+        onChange = { v -> viewModel.updateSettings { current -> current.copy(output = current.output.copy(stretchY = v)) } },
+    )
     MenuSwitchRow("VSync", settings.display.vsyncEnable, field = "vsyncEnable") {
         viewModel.updateSettings { current -> current.copy(display = current.display.copy(vsyncEnable = it)) }
     }
@@ -1653,6 +1938,15 @@ private fun AchievementsPane(state: EmulationMenuUiState, viewModel: EmulationMe
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        val retroPoints = com.armsx2.RaLibrary.retroPoints.longValue
+                        LaunchedEffect(Unit) { com.armsx2.RaLibrary.refreshRetroPoints() }
+                        if (retroPoints >= 0) {
+                            Text(
+                                "  ·  $retroPoints RP",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                        }
                     }
                 }
             }
@@ -1750,19 +2044,19 @@ private fun HardcoreBadge() {
 private fun arcadeActions(viewModel: EmulationMenuViewModel): List<MenuAction> {
     if (com.armsx2.arcade.Arcade.sessionMode.intValue < 0) return emptyList()
     return listOf(
-        MenuAction(str("arcade.coin.p1"), str("arcade.coin.p1.detail"), "¢", null) {
+        MenuAction(str("arcade.coin.p1"), str("arcade.coin.p1.detail"), "¢", null, key = "arcadeCoin1") {
             com.armsx2.arcade.Arcade.insertCoin(0)
             viewModel.resume()
         },
-        MenuAction(str("arcade.coin.p2"), str("arcade.coin.p2.detail"), "¢", null) {
+        MenuAction(str("arcade.coin.p2"), str("arcade.coin.p2.detail"), "¢", null, key = "arcadeCoin2") {
             com.armsx2.arcade.Arcade.insertCoin(1)
             viewModel.resume()
         },
-        MenuAction(str("arcade.service"), str("arcade.service.detail"), "✚", null) {
+        MenuAction(str("arcade.service"), str("arcade.service.detail"), "✚", null, key = "arcadeService") {
             viewModel.resume()
             com.armsx2.arcade.Arcade.pressService()
         },
-        MenuAction(str("arcade.test"), str("arcade.test.detail"), "⚙", null) {
+        MenuAction(str("arcade.test"), str("arcade.test.detail"), "⚙", null, key = "arcadeTest") {
             com.armsx2.arcade.Arcade.toggleTest()
             viewModel.resume()
         },
@@ -1774,24 +2068,32 @@ private data class MenuAction(
     val detail: String,
     val glyph: String,
     val accent: Color?,
+    // Stable across languages and orderings: the saved tab order and the pad's ids use it.
+    val key: String = title,
     val action: () -> Unit,
 )
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun ActionGrid(actions: List<MenuAction>) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        actions.forEachIndexed { index, item ->
-            val id = "pause.action.$index"
+        actions.forEach { item -> androidx.compose.runtime.key(item.key) {
+            // By key, not position: the player can reorder this tab.
+            val id = "pause.action.${item.key}"
             // The registry is the ONE source of truth for which row is selected. The tint used
             // to come from a separate index in the view model that advanced only when a row was
             // ACTIVATED, while the D-pad moved the registry — so the menu drew one selection and
             // moved another, and the row you were pointing at was never the one lit up.
             val active = com.armsx2.ui.settings.SettingsControllerNav.isSelected(id)
             Surface(
-                onClick = item.action,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .controllerFocusable(id, onConfirm = item.action),
+                    .controllerFocusable(id, onConfirm = item.action)
+                    .clip(RoundedCornerShape(16.dp))
+                    .combinedClickable(
+                        onClick = item.action,
+                        onLongClick = { SessionOrder.startArranging(item.key) },
+                    ),
                 shape = RoundedCornerShape(16.dp),
                 color = if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
                 else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.48f),
@@ -1823,13 +2125,253 @@ private fun ActionGrid(actions: List<MenuAction>) {
                     }
                 }
             }
+        } }
+    }
+}
+
+/** One disc of the game in the chooser: its cover, its number and its file. */
+@Composable
+private fun DiscChoiceRow(game: com.armsx2.GameInfo, id: String) {
+    val inDrive = DiscSwap.inDrive(game)
+    val selected = com.armsx2.ui.settings.SettingsControllerNav.isSelected(id)
+    val choose = { DiscSwap.choose(game) }
+    Surface(
+        onClick = choose,
+        modifier = Modifier.fillMaxWidth().controllerFocusable(id, RoundedCornerShape(16.dp), onConfirm = choose),
+        shape = RoundedCornerShape(16.dp),
+        color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.48f),
+        border = BorderStroke(
+            1.dp,
+            if (selected || inDrive) MaterialTheme.colorScheme.primary.copy(alpha = 0.72f)
+            else MaterialTheme.colorScheme.outline.copy(alpha = 0.34f),
+        ),
+    ) {
+        Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            GameCoverArt(game, Modifier.width(38.dp).height(52.dp))
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                val file = game.fileName.orEmpty()
+                Text(
+                    DiscSwap.number(file)?.let { str("swapDisc.discNumber").format(it) } ?: game.title,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    file,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (inDrive) {
+                Spacer(Modifier.width(8.dp))
+                com.armsx2.ui.common.StatusChip(str("swapDisc.inDrive"))
+            }
+        }
+    }
+}
+
+/** The file browser, for a disc that is not in the library or not named like the others. */
+@Composable
+private fun DiscChoiceBrowse() {
+    val id = "menu.disc.browse"
+    val selected = com.armsx2.ui.settings.SettingsControllerNav.isSelected(id)
+    Surface(
+        onClick = DiscSwap::browse,
+        modifier = Modifier.fillMaxWidth().controllerFocusable(id, RoundedCornerShape(16.dp), onConfirm = DiscSwap::browse),
+        shape = RoundedCornerShape(16.dp),
+        color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.48f),
+        border = BorderStroke(
+            1.dp,
+            if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.72f)
+            else MaterialTheme.colorScheme.outline.copy(alpha = 0.34f),
+        ),
+    ) {
+        Row(Modifier.padding(horizontal = 13.dp, vertical = 13.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("📁", fontSize = 19.sp, modifier = Modifier.width(30.dp))
+            Text(str("swapDisc.browse"), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+        }
+    }
+}
+
+/** The first tab as a plain list of its rows, for putting them in order: drag a row (hold it,
+ *  or grab its handle), or with a controller pick one up with A, move it and put it down with A.
+ *  B puts a picked-up row back, and otherwise closes the view, keeping the order. */
+@Composable
+private fun SessionArrangeView(order: List<String>, labels: Map<String, Pair<String, String>>) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(str("menu.arrange.title"), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+        Text(
+            str("menu.arrange.hint"),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            CompactAction(str("common.done"), "✓", Modifier.weight(1f)) {
+                val first = order.firstOrNull()
+                SessionOrder.finishArranging()
+                if (first != null) com.armsx2.ui.settings.SettingsControllerNav.focusWhenRegistered(null, "pause.action.$first")
+            }
+            CompactAction(str("menu.arrange.reset"), "↺", Modifier.weight(1f)) { SessionOrder.resetOrder() }
+        }
+        order.forEach { key ->
+            androidx.compose.runtime.key(key) {
+                val (glyph, title) = labels[key] ?: ("•" to key)
+                ArrangeRow(key, glyph, title)
+            }
+        }
+    }
+}
+
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun ArrangeRow(key: String, glyph: String, title: String) {
+    val lifted = SessionOrder.lifted == key
+    val id = "pause.arrange.$key"
+    val selected = com.armsx2.ui.settings.SettingsControllerNav.isSelected(id)
+    val scroll = com.armsx2.ui.settings.LocalSettingsScrollState.current
+    val scope = rememberCoroutineScope()
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val bring = remember { BringIntoViewRequester() }
+    // A row moved with the controller stays in sight as it goes past the fold.
+    val index = SessionOrder.indexOf(key)
+    LaunchedEffect(lifted, index) { if (lifted) runCatching { bring.bringIntoView() } }
+
+    // The finger in root coordinates, worked out from the row's position NOW rather than by
+    // adding up drag deltas: the row itself moves as it is reordered, which shows up in its
+    // local deltas as finger movement that never happened.
+    var bounds by remember { mutableStateOf(androidx.compose.ui.geometry.Rect.Zero) }
+    val dragModifier = Modifier.pointerInput(key) {
+        var fingerY = 0f
+        var edgeScroll: kotlinx.coroutines.Job? = null
+        fun place() {
+            val others = SessionOrder.arrangedKeys().filter { it != key }
+            val target = others.count { k -> (SessionOrder.rowBounds[k]?.center?.y ?: Float.MAX_VALUE) < fingerY }
+            SessionOrder.moveTo(key, target)
+        }
+        fun end() {
+            edgeScroll?.cancel()
+            edgeScroll = null
+            SessionOrder.drop()
+        }
+        detectDragGesturesAfterLongPress(
+            onDragStart = { at ->
+                SessionOrder.lift(key)
+                fingerY = bounds.top + at.y
+                // Near the top or bottom of the visible part of the tab, scroll it, so a row can
+                // be taken past the fold.
+                val edge = with(density) { 44.dp.toPx() }
+                val stepPx = with(density) { 7.dp.toPx() }
+                edgeScroll = scope.launch(Dispatchers.Main) {
+                    while (true) {
+                        val view = SessionOrder.viewport
+                        if (scroll != null && view != null) {
+                            val step = when {
+                                fingerY < view.top + edge -> -stepPx
+                                fingerY > view.bottom - edge -> stepPx
+                                else -> 0f
+                            }
+                            if (step != 0f && scroll.dispatchRawDelta(step) != 0f) place()
+                        }
+                        delay(16)
+                    }
+                }
+            },
+            onDrag = { change, _ ->
+                change.consume()
+                fingerY = bounds.top + change.position.y
+                place()
+            },
+            onDragEnd = { end() },
+            onDragCancel = { end() },
+        )
+    }
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .bringIntoViewRequester(bring)
+            .onGloballyPositioned {
+                val b = it.boundsInRoot()
+                bounds = b
+                SessionOrder.rowBounds[key] = b
+            }
+            .controllerFocusable(id, onConfirm = {
+                if (SessionOrder.lifted == key) SessionOrder.drop() else SessionOrder.lift(key)
+            })
+            .then(dragModifier),
+        shape = RoundedCornerShape(16.dp),
+        color = when {
+            lifted -> MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
+            selected -> MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+            else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.48f)
+        },
+        border = BorderStroke(
+            if (lifted) 2.dp else 1.dp,
+            if (lifted || selected) MaterialTheme.colorScheme.primary.copy(alpha = if (lifted) 1f else 0.72f)
+            else MaterialTheme.colorScheme.outline.copy(alpha = 0.34f),
+        ),
+        shadowElevation = if (lifted) 10.dp else 0.dp,
+    ) {
+        Row(Modifier.padding(horizontal = 13.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                glyph,
+                color = MaterialTheme.colorScheme.primary,
+                fontSize = 19.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.width(30.dp),
+            )
+            Text(
+                title,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            // The handle: dragging it moves the row at once, where the rest of the row scrolls
+            // the list and moves the row only after a hold.
+            Box(
+                Modifier
+                    .size(40.dp)
+                    .pointerInput(key) {
+                        var fingerY = 0f
+                        detectDragGestures(
+                            onDragStart = { at ->
+                                SessionOrder.lift(key)
+                                fingerY = bounds.top + at.y
+                            },
+                            onDrag = { change, _ ->
+                                change.consume()
+                                fingerY = bounds.top + (bounds.height - size.height) / 2f + change.position.y
+                                val others = SessionOrder.arrangedKeys().filter { it != key }
+                                val target = others.count { k -> (SessionOrder.rowBounds[k]?.center?.y ?: Float.MAX_VALUE) < fingerY }
+                                SessionOrder.moveTo(key, target)
+                            },
+                            onDragEnd = { SessionOrder.drop() },
+                            onDragCancel = { SessionOrder.drop() },
+                        )
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("≡", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+            }
         }
     }
 }
 
 @Composable
-internal fun SectionCard(title: String, field: String? = null, content: @Composable ColumnScope.() -> Unit) {
+internal fun SectionCard(
+    title: String,
+    field: String? = null,
+    // Holding the title, where the card can be moved (the first tab's cards).
+    onTitleLongPress: (() -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit,
+) {
     val tint = com.armsx2.ui.settings.rowTint(field, fillAlpha = 0.42f, outlineAlpha = 0.34f)
+    val latestLongPress by androidx.compose.runtime.rememberUpdatedState(onTitleLongPress)
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(17.dp),
@@ -1839,7 +2381,14 @@ internal fun SectionCard(title: String, field: String? = null, content: @Composa
         Column(Modifier.padding(13.dp)) {
             Text(
                 title,
-                modifier = Modifier.overrideMarker(tint, MaterialTheme.typography.titleSmall.lineHeight),
+                modifier = Modifier
+                    .overrideMarker(tint, MaterialTheme.typography.titleSmall.lineHeight)
+                    .then(
+                        if (onTitleLongPress == null) Modifier
+                        else Modifier.fillMaxWidth().pointerInput(Unit) {
+                            detectTapGestures(onLongPress = { latestLongPress?.invoke() })
+                        },
+                    ),
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold,
             )
@@ -1877,12 +2426,27 @@ private fun FramerateSlider(title: String, value: Float, onValue: (Float) -> Uni
             ),
         ) {
             val label = if (value % 1f == 0f) "${value.toInt()} Hz" else "%.2f Hz".format(value)
-            Text(label, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
-            Slider(
-                value = value.coerceIn(20f, 120f),
-                onValueChange = { onValue(canonicalFramerate(Math.round(it))) },
-                valueRange = 20f..120f,
-            )
+            // Typed in Hz: a whole number goes through the same stops as the slider (60 is 59.94),
+            // anything else is kept as typed.
+            com.armsx2.ui.settings.TypeableSliderValue(label) { typed ->
+                com.armsx2.ui.settings.firstNumberIn(typed)?.toFloat()?.coerceIn(20f, 120f)?.let { hz ->
+                    onValue(if (hz % 1f == 0f) canonicalFramerate(hz.toInt()) else hz)
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                com.armsx2.ui.settings.SliderStepArrow(
+                    com.armsx2.ui.settings.SLIDER_DOWN_GLYPH, str("common.decrease"), enabled = value > 20f,
+                ) { onValue(canonicalFramerate((Math.round(value) - 1).coerceAtLeast(20))) }
+                Slider(
+                    value = value.coerceIn(20f, 120f),
+                    onValueChange = { onValue(canonicalFramerate(Math.round(it))) },
+                    valueRange = 20f..120f,
+                    modifier = Modifier.weight(1f),
+                )
+                com.armsx2.ui.settings.SliderStepArrow(
+                    com.armsx2.ui.settings.SLIDER_UP_GLYPH, str("common.increase"), enabled = value < 120f,
+                ) { onValue(canonicalFramerate((Math.round(value) + 1).coerceAtMost(120))) }
+            }
         }
     }
 }

@@ -597,6 +597,9 @@ data class OutputSettings(
     /** EmuCore/GS/CustomAspectRatio — width/height used when [aspectRatio] is 8 (Custom).
      *  A ratio rather than separate W/H so any value is expressible; clamped 0.5..5.0 natively. */
     val customAspectRatio: Float = 16f / 9f,
+    /** EmuCore/GS/StretchY — vertical stretch of the picture in percent (10..300, 100 = none).
+     *  With integer scaling it fills the height the whole-number scale leaves. A float natively. */
+    val stretchY: Int = 100,
     /** Host graphics API: "auto" / "opengl" / "vulkan" / "software". Applied via
      *  the renderer JNI helpers on (re)launch; per-game so each title can pick its
      *  own backend. Seeded from the legacy global "renderer" pref on first load.
@@ -1531,6 +1534,7 @@ data class Settings(
                 upscaleFloat = floatAt("EmuCore/GS/upscale_multiplier") ?: this.output.upscaleFloat,
                 // ---- EmuCore/GS (writeGsToNative). Aspect/FMV/gpuProfile stored as names. ----
                 customAspectRatio = floatAt("EmuCore/GS/CustomAspectRatio") ?: this.output.customAspectRatio,
+                stretchY = floatAt("EmuCore/GS/StretchY")?.let { Math.round(it).coerceIn(10, 300) } ?: this.output.stretchY,
                 aspectRatio = when (strAt("EmuCore/GS/AspectRatio")) {
                 "Stretch" -> 0
                 "Auto 4:3/3:2" -> 1
@@ -1786,6 +1790,7 @@ data class Settings(
         }
         put("EmuCore/GS", "FMVAspectRatioSwitch", "string", fmvAspectRatioName)
         put("EmuCore/GS", "CustomAspectRatio", "float", output.customAspectRatio.coerceIn(0.5f, 5.0f).toString())
+        put("EmuCore/GS", "StretchY", "float", output.stretchY.coerceIn(10, 300).toString())
         put("EmuCore/GS", "deinterlace_mode", "int", output.deinterlaceMode.coerceIn(0, 9).toString())
         put("EmuCore/GS", "FramerateNTSC", "float", output.framerateNtsc.toString())
         put("EmuCore/GS", "FrameratePAL", "float", output.frameratePal.toString())
@@ -2110,6 +2115,7 @@ data class Settings(
         put("aspectRatio", output.aspectRatio)
         put("fmvAspectRatio", output.fmvAspectRatio)
         put("customAspectRatio", output.customAspectRatio.toDouble())
+        put("stretchY", output.stretchY)
         put("deinterlaceMode", output.deinterlaceMode)
         put("dev9EthEnable", network.dev9EthEnable)
         put("dev9EthApi", network.dev9EthApi)
@@ -2519,6 +2525,7 @@ data class Settings(
                     aspectRatio = json.optInt("aspectRatio", def.output.aspectRatio),
                     fmvAspectRatio = json.optInt("fmvAspectRatio", def.output.fmvAspectRatio),
                     customAspectRatio = json.optDouble("customAspectRatio", def.output.customAspectRatio.toDouble()).toFloat(),
+                    stretchY = json.optInt("stretchY", def.output.stretchY),
                     deinterlaceMode = json.optInt("deinterlaceMode", def.output.deinterlaceMode),
                 ),
                 network = NetworkSettings(
@@ -2768,6 +2775,7 @@ data class Settings(
             if (current.output.aspectRatio         != base.output.aspectRatio)         j.put("aspectRatio", current.output.aspectRatio)
             if (current.output.fmvAspectRatio      != base.output.fmvAspectRatio)      j.put("fmvAspectRatio", current.output.fmvAspectRatio)
             if (current.output.customAspectRatio   != base.output.customAspectRatio)   j.put("customAspectRatio", current.output.customAspectRatio.toDouble())
+            if (current.output.stretchY            != base.output.stretchY)            j.put("stretchY", current.output.stretchY)
             if (current.output.deinterlaceMode     != base.output.deinterlaceMode)     j.put("deinterlaceMode", current.output.deinterlaceMode)
             if (current.network.dev9EthEnable       != base.network.dev9EthEnable)       j.put("dev9EthEnable", current.network.dev9EthEnable)
             if (current.network.dev9EthApi          != base.network.dev9EthApi)          j.put("dev9EthApi", current.network.dev9EthApi)
@@ -3112,6 +3120,7 @@ data class Settings(
                 aspectRatio = if (overrides.has("aspectRatio")) overrides.getInt("aspectRatio") else base.output.aspectRatio,
                 fmvAspectRatio = if (overrides.has("fmvAspectRatio")) overrides.getInt("fmvAspectRatio") else base.output.fmvAspectRatio,
                 customAspectRatio = if (overrides.has("customAspectRatio")) overrides.getDouble("customAspectRatio").toFloat() else base.output.customAspectRatio,
+                stretchY = if (overrides.has("stretchY")) overrides.getInt("stretchY") else base.output.stretchY,
                 deinterlaceMode = if (overrides.has("deinterlaceMode")) overrides.getInt("deinterlaceMode") else base.output.deinterlaceMode,
             ),
             network = NetworkSettings(

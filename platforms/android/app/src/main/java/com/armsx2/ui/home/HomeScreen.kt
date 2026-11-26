@@ -132,6 +132,9 @@ import com.armsx2.ui.common.StatusChip
 import com.armsx2.ui.settings.controllerFocusable
 import kotlin.math.abs
 
+/** How far the bottom toolbar (and the search pinned above it) stands off the bottom edge. */
+private val BottomBarLift = 12.dp
+
 private val LocalCustomCoverMap = staticCompositionLocalOf<Map<String, java.io.File>> { emptyMap() }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -602,6 +605,20 @@ fun HomeScreen(
                     bottomEdge = bottomEdge,
                 )
             }
+            val librarySearch: @Composable (Modifier) -> Unit = { modifier ->
+                SearchField(
+                    value = state.query,
+                    onClick = { LibraryKeyboard.open(viewModel.state.value.query, viewModel::setQuery, searchPlaceholder) },
+                    placeholder = searchPlaceholder,
+                    modifier = modifier,
+                    selected = HomeInputController.zone.value == HomeZone.Search && com.armsx2.ui.common.PadInput.active.value,
+                    onClear = if (state.query.isNotEmpty()) { { viewModel.setQuery("") } } else null,
+                )
+            }
+            // With the toolbar at the bottom, the search field sits just above it instead of
+            // scrolling away with the top of the grid, and the pair stands a little off the
+            // bottom edge, nearer the thumb.
+            val searchPinned = toolbarBottom && state.initialized && showSearch
             LazyVerticalGrid(
                 columns = columns,
                 state = gridState,
@@ -610,7 +627,9 @@ fun HomeScreen(
                     start = 8.dp + cutout.calculateStartPadding(ld),
                     end = 8.dp + cutout.calculateEndPadding(ld),
                     top = if (toolbarBottom) statusBarTop + 8.dp else 0.dp,
-                    bottom = if (toolbarBottom) navBarBottom + 72.dp else 16.dp,
+                    bottom = if (toolbarBottom) {
+                        navBarBottom + 72.dp + BottomBarLift + if (searchPinned) 64.dp else 0.dp
+                    } else 16.dp,
                 ),
                 horizontalArrangement = Arrangement.spacedBy(9.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -618,16 +637,8 @@ fun HomeScreen(
                 if (!toolbarBottom) {
                     item(span = { GridItemSpan(maxLineSpan) }) { libraryToolbar(false) }
                 }
-                if (state.initialized && showSearch) {
-                    item(span = { GridItemSpan(maxLineSpan) }) {
-                        SearchField(
-                            value = state.query,
-                            onClick = { LibraryKeyboard.open(viewModel.state.value.query, viewModel::setQuery, searchPlaceholder) },
-                            placeholder = searchPlaceholder,
-                            modifier = Modifier.fillMaxWidth(),
-                            selected = HomeInputController.zone.value == HomeZone.Search && com.armsx2.ui.common.PadInput.active.value,
-                        )
-                    }
+                if (state.initialized && showSearch && !toolbarBottom) {
+                    item(span = { GridItemSpan(maxLineSpan) }) { librarySearch(Modifier.fillMaxWidth()) }
                 }
 
                 // List layout: one filter control instead of category sections. Stacking shelves
@@ -988,15 +999,18 @@ fun HomeScreen(
             // grid's contentPadding gives the top bar (8dp + display cutout); otherwise
             // the bottom bar spans edge-to-edge and reads wider than the top.
             if (toolbarBottom) {
-                Box(
+                Column(
                     Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
                         .padding(
                             start = 8.dp + cutout.calculateStartPadding(ld),
                             end = 8.dp + cutout.calculateEndPadding(ld),
+                            bottom = BottomBarLift,
                         ),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
+                    if (searchPinned) librarySearch(Modifier.fillMaxWidth())
                     libraryToolbar(true)
                 }
             }
@@ -2429,7 +2443,7 @@ object HomeInputController {
      *  Search, Recents, Grid. When the toolbar is at the bottom it isn't above. */
     private fun zoneAboveGrid(): HomeZone = when {
         recentCount > 0 -> HomeZone.Recents
-        searchAvailable -> HomeZone.Search
+        searchAvailable && !toolbarAtBottom -> HomeZone.Search
         !toolbarAtBottom && toolbarActions.isNotEmpty() -> HomeZone.Toolbar
         else -> HomeZone.Grid
     }
@@ -2455,17 +2469,21 @@ object HomeInputController {
                     recentCount > 0 -> HomeZone.Recents
                     else -> HomeZone.Grid
                 }
-                toolbarAtBottom && dy < 0 -> zone.value = HomeZone.Grid
+                toolbarAtBottom && dy < 0 -> zone.value = if (searchAvailable) HomeZone.Search else HomeZone.Grid
                 dx != 0 && toolbarActions.isNotEmpty() ->
                     toolbarIndex.intValue = (toolbarIndex.intValue + dx).coerceIn(0, toolbarActions.lastIndex)
             }
-            HomeZone.Search -> when {
-                dy < 0 -> if (!toolbarAtBottom && toolbarActions.isNotEmpty()) zone.value = HomeZone.Toolbar
+            // With the toolbar at the bottom the search sits above it, below the grid.
+            HomeZone.Search -> if (toolbarAtBottom) when {
+                dy < 0 -> zone.value = HomeZone.Grid
+                dy > 0 -> if (toolbarActions.isNotEmpty()) zone.value = HomeZone.Toolbar
+            } else when {
+                dy < 0 -> if (toolbarActions.isNotEmpty()) zone.value = HomeZone.Toolbar
                 dy > 0 -> zone.value = if (recentCount > 0) HomeZone.Recents else HomeZone.Grid
             }
             HomeZone.Recents -> when {
                 dy < 0 -> zone.value = when {
-                    searchAvailable -> HomeZone.Search
+                    searchAvailable && !toolbarAtBottom -> HomeZone.Search
                     !toolbarAtBottom && toolbarActions.isNotEmpty() -> HomeZone.Toolbar
                     else -> HomeZone.Recents
                 }
@@ -2491,8 +2509,9 @@ object HomeInputController {
                 dy > 0 -> {
                     val before = viewModel.state.value.selectedIndex
                     viewModel.moveSelection(columns)
-                    if (viewModel.state.value.selectedIndex == before && toolbarAtBottom && toolbarActions.isNotEmpty()) {
-                        zone.value = HomeZone.Toolbar
+                    if (viewModel.state.value.selectedIndex == before && toolbarAtBottom) {
+                        if (searchAvailable) zone.value = HomeZone.Search
+                        else if (toolbarActions.isNotEmpty()) zone.value = HomeZone.Toolbar
                     }
                 }
             }

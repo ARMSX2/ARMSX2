@@ -392,6 +392,11 @@ object EmulationMenuInputController {
     }
 
     fun move(dx: Int, dy: Int): Boolean {
+        // A row picked up in the first tab's arrange view: up and down carry it.
+        if (overlayDismiss == null && SessionOrder.lifted != null) {
+            if (dy != 0) SessionOrder.step(if (dy < 0) -1 else 1)
+            return true
+        }
         // A panel is over the menu: everything is registry nav, there is no tab column to walk.
         if (overlayDismiss != null) {
             when {
@@ -441,6 +446,7 @@ object EmulationMenuInputController {
         // you cannot see is worse than doing nothing.
         if (overlayDismiss != null) return true
         val viewModel = owner ?: return false
+        SessionOrder.finishArranging()
         if (inContent.value) exitContent()
         viewModel.cycleTab(delta)
         return true
@@ -458,6 +464,11 @@ object EmulationMenuInputController {
     fun back(): Boolean {
         // Back closes the panel, not the menu behind it.
         overlayDismiss?.let { dismiss -> dismiss(); return true }
+        // In the arrange view, B puts a picked-up row back, and otherwise leaves the view.
+        if (SessionOrder.arranging) {
+            if (SessionOrder.lifted != null) SessionOrder.putBack() else SessionOrder.finishArranging()
+            return true
+        }
         if (inContent.value) { exitContent(); return true }
         owner?.resume() ?: return false
         return true
