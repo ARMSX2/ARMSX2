@@ -350,7 +350,11 @@ object EmulationMenuInputController {
         // Left by the pad inside a pane: back in it, on the control it had. The pane composes a frame after
         // this, so the control is picked as it registers (unless the pad has moved by then).
         val id = place?.controlId
-        if (place != null && place.inContent && id != null && place.tab == viewModel.state.value.tab) {
+        // Only while the pad is in use: after a touch the tab reopens at its own scroll, and selecting
+        // the control would scroll the page back to it.
+        if (place != null && place.inContent && id != null && place.tab == viewModel.state.value.tab &&
+            com.armsx2.ui.common.PadInput.active.value
+        ) {
             inContent.value = true
             nav.clearSelection()
             if (!nav.selectById(id)) nav.focusWhenRegistered(null, id)

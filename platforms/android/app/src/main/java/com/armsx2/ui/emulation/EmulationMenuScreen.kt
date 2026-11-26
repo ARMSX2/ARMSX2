@@ -19,6 +19,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
 import com.armsx2.ui.settings.swipeBetweenTabs
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -193,6 +194,12 @@ fun EmulationMenuScreen(viewModel: EmulationMenuViewModel = viewModel()) {
         }
     }
     LaunchedEffect(Unit) { shown = true }
+    // A touch since the pad last moved: the menu reopens on the tab and that tab's scroll, not on the
+    // control the pad left, which selecting again would scroll the page back to.
+    val padActive = com.armsx2.ui.common.PadInput.active.value
+    LaunchedEffect(padActive) {
+        if (!padActive) com.armsx2.ui.MenuPlace.note(viewModel.state.value.tab, inContent = false, controlId = null)
+    }
 
     // Hand pad input to the Friends panel while it is open, and give it back on close.
     //
@@ -616,15 +623,27 @@ private fun MenuPage(
 
 @Composable
 private fun CompactMenuTabs(selected: EmulationMenuTab, onSelect: (EmulationMenuTab) -> Unit) {
+    // The strip scrolls itself to the selected tab, so it stays reachable on a narrow screen. Not
+    // bringIntoView: the strip sits at the top of the page, which would be scrolled back up with it,
+    // losing the place the page reopens at.
+    val strip = rememberScrollState()
+    val starts = remember { androidx.compose.runtime.mutableStateMapOf<EmulationMenuTab, Int>() }
+    val selectedStart = starts[selected]
+    LaunchedEffect(selected, selectedStart) {
+        selectedStart?.let { runCatching { strip.animateScrollTo((it - 24).coerceAtLeast(0)) } }
+    }
     Row(
         Modifier
             .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
+            .horizontalScroll(strip)
             .padding(horizontal = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         EmulationMenuTab.entries.forEach { tab ->
-            MenuTab(tab, tab == selected, onSelect)
+            MenuTab(
+                tab, tab == selected, onSelect,
+                Modifier.onGloballyPositioned { starts[tab] = it.positionInParent().x.toInt() },
+            )
         }
     }
 }
@@ -680,20 +699,17 @@ private fun MenuRailTab(tab: EmulationMenuTab, active: Boolean, onSelect: (Emula
 }
 
 @Composable
-private fun MenuTab(tab: EmulationMenuTab, active: Boolean, onSelect: (EmulationMenuTab) -> Unit) {
-    // Keep the active tab scrolled into view so controller nav reaches tabs that fall off
-    // the rail on short screens — e.g. the 7th "Achievements" (RA) tab on a Retroid Pocket
-    // in landscape. Mirrors the settings-hub / library camera-follow. Resolves against the
-    // nearest scrollable ancestor, so it works for both the vertical rail and the compact
-    // horizontal strip.
-    val bring = remember { BringIntoViewRequester() }
-    LaunchedEffect(active) { if (active) runCatching { bring.bringIntoView() } }
+private fun MenuTab(
+    tab: EmulationMenuTab,
+    active: Boolean,
+    onSelect: (EmulationMenuTab) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     Surface(
         onClick = { onSelect(tab) },
-        modifier = Modifier
+        modifier = modifier
             .widthIn(min = 132.dp, max = 210.dp)
-            .padding(vertical = 3.dp)
-            .bringIntoViewRequester(bring),
+            .padding(vertical = 3.dp),
         shape = RoundedCornerShape(14.dp),
         color = if (active) MaterialTheme.colorScheme.primaryContainer
         else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.56f),
@@ -889,14 +905,6 @@ private fun SessionPane(state: EmulationMenuUiState, viewModel: EmulationMenuVie
     val gsDumpQueued = str("gsdump.quick.queued")
     val actions = listOf(
         MenuAction(str("action.resume"), str("action.play"), "▶", Success, key = "resume", action = viewModel::resume),
-        // Saving and loading right under Resume: with them only in the slot card at the
-        // bottom of this tab, every save meant scrolling past the whole on-screen card.
-        MenuAction(str("savestate.title.save"), str("savestate.action.save.detail"), "↥", null, key = "saveState") {
-            com.armsx2.ui.WindowImpl.openInGameScreen(com.armsx2.ui.InGameScreen.SaveState)
-        },
-        MenuAction(str("savestate.title.load"), str("savestate.action.load.detail"), "↧", null, key = "loadState") {
-            com.armsx2.ui.WindowImpl.openInGameScreen(com.armsx2.ui.InGameScreen.LoadState)
-        },
         MenuAction(
             str("action.fastForward"),
             if (MainActivityRuntime.fastForwardToggleActive) str("action.fastForward.on") else str("action.fastForward.detail"),
@@ -931,6 +939,7 @@ private fun SessionPane(state: EmulationMenuUiState, viewModel: EmulationMenuVie
     )
     val savesTitle = str("savestate.title.loadManage")
     val screenTitle = str("tab.overlay")
+    // Load / Manage Saves right under the actions (below Close), above the long on-screen card.
     val order = SessionOrder.ordered(actions.map { it.key } + listOf(CARD_SAVES, CARD_SCREEN))
     if (SessionOrder.arranging) {
         val labels = actions.associate { it.key to (it.glyph to it.title) } +
@@ -981,7 +990,7 @@ private fun OnScreenCard(state: EmulationMenuUiState, viewModel: EmulationMenuVi
     // On-screen display — a single universal on/off (old-UI style); the per-stat
     // toggles live in All Settings. Plus a frame-limit switch so fast-forward is one
     // tap away.
-    SectionCard(str("tab.overlay"), onTitleLongPress = { SessionOrder.startArranging(CARD_SCREEN) }) {
+    SectionCard(str("tab.overlay"), onTitleLongPress = { SessionOrder.startArranging() }) {
         // #357: the pause button replaced the settings cog, so it's front-and-centre here. This is
         // "tap to reveal", NOT show/hide: on = the glyph stays hidden until you tap its top-right
         // corner, which surfaces it. Either way that corner always opens this menu, so unlike the
@@ -1074,7 +1083,7 @@ private fun OnScreenCard(state: EmulationMenuUiState, viewModel: EmulationMenuVi
 
 @Composable
 private fun SaveSlotsCard(state: EmulationMenuUiState, viewModel: EmulationMenuViewModel) {
-    SectionCard(str("savestate.title.loadManage"), onTitleLongPress = { SessionOrder.startArranging(CARD_SAVES) }) {
+    SectionCard(str("savestate.title.loadManage"), onTitleLongPress = { SessionOrder.startArranging() }) {
         // When each slot was last written. Ten chips numbered 1..10 say nothing about which
         // hold anything or how old they are, so picking a slot to overwrite after a long
         // session was guesswork -- the Save Manager has had the dates all along, but the quick
@@ -2092,7 +2101,7 @@ private fun ActionGrid(actions: List<MenuAction>) {
                     .clip(RoundedCornerShape(16.dp))
                     .combinedClickable(
                         onClick = item.action,
-                        onLongClick = { SessionOrder.startArranging(item.key) },
+                        onLongClick = { SessionOrder.startArranging() },
                     ),
                 shape = RoundedCornerShape(16.dp),
                 color = if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
@@ -2236,9 +2245,10 @@ private fun ArrangeRow(key: String, glyph: String, title: String) {
     val scope = rememberCoroutineScope()
     val density = androidx.compose.ui.platform.LocalDensity.current
     val bring = remember { BringIntoViewRequester() }
-    // A row moved with the controller stays in sight as it goes past the fold.
+    // A row moved with the controller stays in sight as it goes past the fold. Not a dragged one:
+    // scrolling the list under the finger would move the row again, and again.
     val index = SessionOrder.indexOf(key)
-    LaunchedEffect(lifted, index) { if (lifted) runCatching { bring.bringIntoView() } }
+    LaunchedEffect(lifted, index) { if (lifted && SessionOrder.movedByPad) runCatching { bring.bringIntoView() } }
 
     // The finger in root coordinates, worked out from the row's position NOW rather than by
     // adding up drag deltas: the row itself moves as it is reordered, which shows up in its

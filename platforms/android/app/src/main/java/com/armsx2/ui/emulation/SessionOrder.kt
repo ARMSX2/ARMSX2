@@ -29,6 +29,10 @@ internal object SessionOrder {
     var lifted by mutableStateOf<String?>(null)
         private set
 
+    /** Whether the last move came from the controller (a drag's own finger keeps its row in sight). */
+    var movedByPad = false
+        private set
+
     // The order being edited, and the rows the tab has right now.
     private var working by mutableStateOf<List<String>>(emptyList())
     private var defaults: List<String> = emptyList()
@@ -119,11 +123,13 @@ internal object SessionOrder {
         val to = from + delta
         if (from < 0 || to !in working.indices) return false
         moveTo(key, to)
+        movedByPad = true
         return true
     }
 
     /** Moves [key] to [index] of the visible order. */
     fun moveTo(key: String, index: Int) {
+        movedByPad = false
         val from = working.indexOf(key)
         if (from < 0) return
         val to = index.coerceIn(0, working.lastIndex)

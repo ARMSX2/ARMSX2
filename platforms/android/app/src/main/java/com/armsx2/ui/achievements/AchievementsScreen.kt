@@ -662,6 +662,13 @@ private fun LibraryProgressSection() {
             shape = RoundedCornerShape(18.dp),
             modifier = Modifier.fillMaxWidth(),
         )
+        // RetroPoints come with the key: fetched once typing settles, no sync needed.
+        LaunchedEffect(key) {
+            if (key.isNotBlank()) {
+                kotlinx.coroutines.delay(1200)
+                com.armsx2.RaLibrary.refreshRetroPoints(force = true)
+            }
+        }
         Spacer(Modifier.height(8.dp))
         val sync = {
             if (!com.armsx2.RaLibrary.syncNow()) {
