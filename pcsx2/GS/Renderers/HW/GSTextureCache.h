@@ -392,6 +392,8 @@ public:
 		bool m_valid_rgb = false;
 		bool m_rt_alpha_scale = false;
 		bool m_downscaled = false;
+		bool m_from_deferred_scratch = false;
+		u8 m_scratch_copy_streak = 0;
 		u64 m_last_draw = 0;
 
 		bool m_is_frame = false;
@@ -1101,12 +1103,16 @@ public:
 	void InvalidateContainedTargets(u32 start_bp, u32 end_bp, u32 write_psm = PSMCT32, u32 write_bw = 1, u32 fb_mask = 0x00000000, bool ignore_exact = false);
 	void InvalidateVideoMemType(int type, u32 bp, u32 write_psm = PSMCT32, u32 write_fbmsk = 0, bool dirty_only = false);
 	void InvalidateVideoMemSubTarget(GSTextureCache::Target* rt);
+	void RemoveTarget(Target* t);
 	void InvalidateVideoMem(const GSOffset& off, const GSVector4i& r, bool target = true);
 	void InvalidateLocalMem(const GSOffset& off, const GSVector4i& r, bool full_flush = false,
 		bool force_synchronous = false);
 
 	/// Removes any sources which point to the specified target.
 	void InvalidateSourcesFromTarget(const Target* t);
+
+	/// True when s is the draw-scoped temporary source that InvalidateTemporarySource() will delete.
+	bool IsTemporarySource(const Source* s) const { return s && s == m_temporary_source; }
 
 	/// Removes any sources which point to the same address as a new target.
 	void ReplaceSourceTexture(Source* s, GSTexture* new_texture, float new_scale, const GSVector2i& new_unscaled_size,

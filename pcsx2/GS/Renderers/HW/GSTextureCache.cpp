@@ -6984,6 +6984,26 @@ void GSTextureCache::InvalidateVideoMemSubTarget(GSTextureCache::Target* rt)
 	}
 }
 
+void GSTextureCache::RemoveTarget(Target* t)
+{
+	if (!t)
+		return;
+
+	m_read_stash.valid = false;
+	InvalidateSourcesFromTarget(t);
+
+	auto& list = m_dst[t->m_type];
+	for (auto i = list.begin(); i != list.end(); ++i)
+	{
+		if (*i == t)
+		{
+			list.erase(i);
+			delete t;
+			return;
+		}
+	}
+}
+
 void GSTextureCache::InvalidateSourcesFromTarget(const Target* t)
 {
 	for (auto it = m_src.m_surfaces.begin(); it != m_src.m_surfaces.end();)
