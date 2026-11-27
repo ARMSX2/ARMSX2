@@ -112,6 +112,18 @@
                 <data android:scheme="content" />
                 <data android:scheme="file" />
             </intent-filter>
+            <!-- Launchers send content:// URIs, which Android resolves to a MIME type.
+                 A filter without mimeType rejects typed intents, so match them here. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="application/x-iso9660-image" />
+                <data android:mimeType="application/octet-stream" />
+                <data android:mimeType="application/gzip" />
+            </intent-filter>
         </activity>
 
         <activity
@@ -127,6 +139,16 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="content" />
                 <data android:scheme="file" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="application/x-iso9660-image" />
+                <data android:mimeType="application/octet-stream" />
+                <data android:mimeType="application/gzip" />
             </intent-filter>
         </activity>
 
@@ -149,6 +171,16 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="content" />
                 <data android:scheme="file" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="application/x-iso9660-image" />
+                <data android:mimeType="application/octet-stream" />
+                <data android:mimeType="application/gzip" />
             </intent-filter>
         </activity-alias>
 
