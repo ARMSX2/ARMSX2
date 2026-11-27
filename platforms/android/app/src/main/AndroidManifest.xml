@@ -113,7 +113,8 @@
                 <data android:scheme="file" />
             </intent-filter>
             <!-- Launchers send content:// URIs, which Android resolves to a MIME type.
-                 A filter without mimeType rejects typed intents, so match them here. -->
+                 A filter without mimeType rejects typed intents, so match them here.
+                 Contributed by katsanva (PR #1069). -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
