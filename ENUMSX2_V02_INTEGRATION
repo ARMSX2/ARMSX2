@@ -1,0 +1,33 @@
+# ENUMSX2 v0.2 integration patch
+
+This patch replaces the v0.1 placeholder preset idea with values mapped to fields that already exist in ARMSX2's Android `Settings.kt`.
+
+## What is functional in this patch
+
+`Enumsx2DeviceProfile.kt` detects A67L-family identifiers and BLU View/Ultra identifiers through Android `Build` properties and returns conservative values for existing ARMSX2 settings.
+
+Mappings verified against the branch's `Settings.kt`:
+
+- `gpuProfile = 3` -> PowerVR override (`AndroidGpuProfileOverride`)
+- `texturePreloading = 1` -> Partial texture preloading
+- `accurateBlendingUnit = 0` -> Minimum blending accuracy
+- `maxAnisotropy = 0` -> anisotropic filtering off
+- `hardwareDownloadMode = 0` -> accurate/default readbacks
+- `mtvu = true` -> existing MTVU setting
+- `eeCycleRate = 0` and `eeCycleSkip = 0` -> nominal CPU timing
+- `vsyncEnable = false` -> no forced VSync
+- `disableShaderCache = false` -> keep the shader cache enabled
+
+## Why conservative values
+
+ENUMSX2 should not globally disable GPU readbacks, force EE underclocking, or force a renderer. Those can improve individual games but can also create broken effects, timing errors, or driver failures. They belong in per-game overrides or measured device tuning.
+
+## Integration point
+
+Import `com.armsx2.enumsx2.Enumsx2DeviceProfiles` in the Android configuration initialization path. On a fresh/default configuration, call `Enumsx2DeviceProfiles.detect()` and use the returned values as defaults for the corresponding `GraphicsSettings`/`CpuSettings` fields already defined by `Settings.kt`.
+
+Do not overwrite a user's saved settings on every launch. Apply the device profile only to new/reset configurations, or behind an explicit "ENUMSX2 optimized defaults" action.
+
+## Next source patch
+
+The next patch should wire this profile into the exact ConfigStore/reset-default path after verifying its current constructor/copy flow. Renderer and internal-resolution defaults should be added there using the app's existing renderer and scaling abstractions rather than raw strings.
