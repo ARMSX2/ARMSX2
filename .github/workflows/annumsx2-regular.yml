@@ -1,0 +1,69 @@
+name: ANNUMSX2 Android Regular
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [enumsx2-a67l-blu-optimizations]
+    paths:
+      - "platforms/android/**"
+      - "pcsx2/**"
+      - "common/**"
+      - "3rdparty/**"
+      - ".github/workflows/annumsx2-regular.yml"
+
+concurrency:
+  group: annumsx2-regular-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android:
+    name: ANNUMSX2 Regular APK
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: platforms/android
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install NDK and CMake
+        run: yes | sdkmanager "ndk;29.0.14206865" "cmake;3.31.6" >/dev/null || true
+
+      - name: Fetch shaderc dependencies
+        run: python3 app/src/main/cpp/3rdparty/shaderc/utils/git-sync-deps
+
+      - name: Install Rust Android target
+        run: rustup target add aarch64-linux-android
+
+      - name: Run unit tests
+        run: ./gradlew :app:testGithubDebugUnitTest --stacktrace
+
+      - name: Build ANNUMSX2 Regular
+        run: |
+          ./gradlew :app:assembleGithubDebug             -Parmsx2.applicationId=com.annumx2             -Parmsx2.channel=stable             -Parmsx2.appLabel=@string/app_name             --stacktrace
+
+      - name: Collect APK
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/regular-output"
+          APK="$(find app/build/outputs/apk -type f -name '*.apk' | head -1)"
+          test -n "$APK"
+          cp "$APK" "$GITHUB_WORKSPACE/regular-output/ANNUMSX2-${GITHUB_SHA::8}.apk"
+          ls -lh "$GITHUB_WORKSPACE/regular-output"
+
+      - name: Upload ANNUMSX2 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ANNUMSX2-regular-${{ github.sha }}
+          path: regular-output/*.apk
+          if-no-files-found: error
+          retention-days: 30
