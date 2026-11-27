@@ -1,0 +1,23 @@
+ENUMSX2 v0.3 - ConfigStore integration
+
+Target file:
+platforms/android/app/src/main/java/com/armsx2/config/ConfigStore.kt
+
+1) Add this import near the other com.armsx2 imports:
+
+import com.armsx2.EnumSX2DeviceProfile
+
+2) In seedFreshInstallDefaults(), replace:
+
+    saveGlobal(freshInstallSettings(iopThreadDefaultOn, hasVulkan11()))
+
+with:
+
+    val base = freshInstallSettings(iopThreadDefaultOn, hasVulkan11())
+    saveGlobal(EnumSX2DeviceProfile.applyFreshInstallDefaults(context, base))
+
+Why this hook:
+- seedFreshInstallDefaults() already exits when config.global exists.
+- Therefore ENUMSX2 defaults are applied only to a genuinely fresh install.
+- Existing users and later manual settings are not overwritten.
+- ConfigStore still decides Vulkan-vs-Auto first; the device profile does not force Vulkan back on when Vulkan 1.1 is unavailable.
