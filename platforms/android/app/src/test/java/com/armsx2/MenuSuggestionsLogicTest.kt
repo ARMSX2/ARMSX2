@@ -55,6 +55,18 @@ class MenuSuggestionsLogicTest {
         assertEquals(listOf("a", "b"), SessionOrder.merge(listOf("arcadeCoin1", "a", "b"), listOf("a", "b")))
     }
 
+    @Test fun aRowNotShownKeepsItsPlaceAfterTheRowItFollowed() {
+        // A coin button was saved after Resume; arranged again outside an arcade game, Close went to the top.
+        assertEquals(
+            listOf("close", "resume", "arcadeCoin1", "restart"),
+            SessionOrder.keepHidden(listOf("close", "resume", "restart"), listOf("resume", "arcadeCoin1", "restart", "close")),
+        )
+        // Saved first, it stays first; two hidden in a row keep their order.
+        assertEquals(listOf("h1", "h2", "b", "a"), SessionOrder.keepHidden(listOf("b", "a"), listOf("h1", "h2", "a", "b")))
+        // Nothing saved yet: the order as arranged.
+        assertEquals(listOf("a", "b"), SessionOrder.keepHidden(listOf("a", "b"), emptyList()))
+    }
+
     @Test fun discsOfOneSetMatchAndOthersDoNot() {
         assertTrue(DiscSwap.sameDiscSet("Parasite Eve II (Disc 1).chd", "Parasite Eve II (Disc 2).chd"))
         assertTrue(DiscSwap.sameDiscSet("Xenosaga II [Disc1].iso", "Xenosaga II [Disc2].iso"))
