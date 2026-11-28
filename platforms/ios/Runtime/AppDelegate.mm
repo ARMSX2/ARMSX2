@@ -24,7 +24,6 @@
 
 #include "IOSRuntime.h"
 #import "PCSX2AppDelegate.h"
-#import "PCSX2SceneDelegate.h"
 
 // Written fresh on every build, see cmake/WriteGitHash.cmake.
 #include "armsx2_git_hash.h"
@@ -149,12 +148,6 @@ static void SetupIOSDirectories(const std::string& dataRoot)
         access(intendedCache.c_str(), F_OK) == 0 ? "present" : "absent");
 
     return YES;
-}
-
-- (UISceneConfiguration *)application:(UIApplication *)application configurationForConnectingSceneSession:(UISceneSession *)connectingSceneSession options:(UISceneConnectionOptions *)options {
-    const BOOL external = [connectingSceneSession.role isEqualToString:UIWindowSceneSessionRoleExternalDisplayNonInteractive];
-    return [UISceneConfiguration configurationWithName:(external ? @"External Display" : @"Default Configuration")
-        sessionRole:connectingSceneSession.role];
 }
 
 - (void)application:(UIApplication *)application didDiscardSceneSessions:(NSSet<UISceneSession *> *)sceneSessions {

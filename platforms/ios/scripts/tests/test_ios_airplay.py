@@ -1,7 +1,7 @@
 import plistlib
 import unittest
 
-from ios_source import IOS_ROOT, RUNTIME_DIR, SWIFT, swift
+from ios_source import IOS_ROOT, RUNTIME_DIR, SWIFT, block, swift
 
 
 class AirPlayTests(unittest.TestCase):
@@ -35,18 +35,15 @@ class AirPlayTests(unittest.TestCase):
         # Info.plist names the external display delegate and nothing links to it, so only this glob keeps it in the app.
         self.assertIn("file(GLOB IOS_RUNTIME_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/Runtime/*.mm)", cmake)
 
-        game_screen = swift("GameScreenView.swift").read_text()
         metal_view = swift("MetalGameView.swift").read_text()
-        app_delegate = (RUNTIME_DIR / "AppDelegate.mm").read_text()
-        self.assertIn("PhoneGameSurface()", game_screen)
-        self.assertNotIn("MetalGameView()", game_screen)
+        for name in ("GameScreenView.swift", "EmulationOnlyGameView.swift"):
+            with self.subTest(view=name):
+                game_screen = swift(name).read_text()
+                self.assertIn("PhoneGameSurface()", game_screen)
+                self.assertNotIn("MetalGameView()", game_screen)
         self.assertIn("if appState.externalDisplayConnected", metal_view)
         self.assertIn("if case .playing = appState.currentScreen", metal_view)
         self.assertIn('settings.localized("Please select a game")', metal_view)
-
-        self.assertIn("isEqualToString:UIWindowSceneSessionRoleExternalDisplayNonInteractive", app_delegate)
-        self.assertIn('configurationWithName:(external ? @"External Display" : @"Default Configuration")', app_delegate)
-        self.assertIn("sessionRole:connectingSceneSession.role", app_delegate)
 
         self.assertIn(
             "self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];",
@@ -54,6 +51,19 @@ class AirPlayTests(unittest.TestCase):
                 "@implementation ARMSX2ExternalDisplaySceneDelegate", 1
             )[1],
         )
+
+    def test_ios_27_registers_the_external_scene_on_the_main_window(self):
+        scene_delegate = (RUNTIME_DIR / "SceneDelegate.mm").read_text()
+        connect = block(scene_delegate, "willConnectToSession:")
+        registration = block(connect, "if (@available(iOS 27.0, *))")
+        self.assertIn(
+            'configurationWithName:@"External Display" sessionRole:UIWindowSceneSessionRoleExternalDisplayNonInteractive',
+            registration,
+        )
+        self.assertIn("externalNonInteractiveSceneAccessoryWithConfiguration:configuration", registration)
+        self.assertIn("[uiWindow.rootViewController registerSceneAccessory:accessory]", registration)
+        disconnect = block(scene_delegate, "- (void)sceneDidDisconnect:")
+        self.assertIn("unregisterSceneAccessory:_externalDisplayRegistration", disconnect)
 
     def test_scene_lookups_never_land_on_the_tv(self):
         walkers = [

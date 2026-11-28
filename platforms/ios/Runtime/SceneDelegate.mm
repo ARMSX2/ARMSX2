@@ -60,7 +60,11 @@
 
 std::atomic<bool> s_loadLastSaveStateOnBoot{false};
 
-@implementation PCSX2SceneDelegate
+@implementation PCSX2SceneDelegate {
+#if defined(__IPHONE_27_0) && !TARGET_OS_MACCATALYST
+    UISceneAccessoryRegistration *_externalDisplayRegistration API_AVAILABLE(ios(27.0));
+#endif
+}
 
 #pragma mark - Scene connection & bootstrap
 - (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)connectionOptions {
@@ -112,6 +116,15 @@ std::atomic<bool> s_loadLastSaveStateOnBoot{false};
         }
         // Before the window is on screen, so there is no wrong first frame.
         [self syncRootViewToWindow];
+#if defined(__IPHONE_27_0) && !TARGET_OS_MACCATALYST
+        // Starting in iOS 27, UIKit only connects this scene for a registered accessory.
+        if (@available(iOS 27.0, *)) {
+            UISceneConfiguration *configuration = [UISceneConfiguration
+                configurationWithName:@"External Display" sessionRole:UIWindowSceneSessionRoleExternalDisplayNonInteractive];
+            UISceneAccessory *accessory = [UISceneAccessory externalNonInteractiveSceneAccessoryWithConfiguration:configuration];
+            _externalDisplayRegistration = [uiWindow.rootViewController registerSceneAccessory:accessory];
+        }
+#endif
         [self.window makeKeyAndVisible];
 
         // ProMotion only needs CADisableMinimumFrameDurationOnPhone in Info.plist. Pinning
@@ -449,6 +462,14 @@ std::atomic<bool> s_loadLastSaveStateOnBoot{false};
 
 #pragma mark - Scene lifecycle
 - (void)sceneDidDisconnect:(UIScene *)scene {
+#if defined(__IPHONE_27_0) && !TARGET_OS_MACCATALYST
+    if (@available(iOS 27.0, *)) {
+        if (_externalDisplayRegistration) {
+            [self.window.rootViewController unregisterSceneAccessory:_externalDisplayRegistration];
+            _externalDisplayRegistration = nil;
+        }
+    }
+#endif
 }
 
 /// A host container connects the scene while the app is still backgrounded, where
