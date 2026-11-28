@@ -467,9 +467,9 @@ if(ARMSX2_ENABLE_ZEROFG)
 		include(FetchContent)
 		FetchContent_Declare(zerofg
 			GIT_REPOSITORY https://github.com/hy300leosquizz-ctrl/ZeroFG.git
-			# v1.2.1: 1.2g, the host kit's displayed-present counter (the overlay's "Display" rate) and
-			# the Advanced VTF Filter.
-			GIT_TAG v1.2.1)
+			# 1.2.2 (the commit, as the tag can move): 1.2g, the host kit's displayed-present counter (the
+			# overlay's "Display" rate), the Advanced VTF Filter and the presenter's latency fixes.
+			GIT_TAG 7f7774937d338f91ffb383de3efecf30456e181b)
 		FetchContent_MakeAvailable(zerofg)
 		set(_zerofg_root "${zerofg_SOURCE_DIR}")
 	endif()
