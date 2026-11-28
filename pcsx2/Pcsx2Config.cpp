@@ -969,6 +969,9 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
 		OpEqu(LsfgFp16) &&
 		OpEqu(LsfgFlowScale) &&
 		OpEqu(LsfgTargetRate) &&
+		OpEqu(ZeroFGEnabled) &&
+		OpEqu(ZeroFGMode) &&
+		OpEqu(ZeroFGMultiplier) &&
 
 
 		OpEqu(Adapter) &&
@@ -1253,6 +1256,10 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapEntryEx(LsfgFp16, "LsfgFp16");
 	SettingsWrapBitfieldEx(LsfgFlowScale, "LsfgFlowScale");
 	SettingsWrapBitfieldEx(LsfgTargetRate, "LsfgTargetRate");
+	SettingsWrapEntryEx(ZeroFGEnabled, "ZeroFGEnabled");
+	// Bitfield, not Entry: a u8, as LsfgMultiplier above.
+	SettingsWrapBitfieldEx(ZeroFGMode, "ZeroFGMode");
+	SettingsWrapBitfieldEx(ZeroFGMultiplier, "ZeroFGMultiplier");
 
 
 	SettingsWrapEntry(Adapter);

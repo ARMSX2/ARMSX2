@@ -46,6 +46,20 @@ public:
 	static void NoteAcquire(double ms, VkResult res);
 	static void NotePresent(double ms, VkResult res);
 
+	// What the display showed (VK_GOOGLE_display_timing, while the GS device has it), not what the
+	// driver accepted: two presents in one refresh are both accepted, and the compositor shows only
+	// the newer. Every GS present, its own and LSFG's generated and real ones, carries a present id
+	// (ChainPresentTiming); PollDisplayed, after each real present, counts the ones a scanout of
+	// their own came back for. The overlay's "Display" rate adds ZeroFG's device B count to it
+	// (GSDeviceVK.cpp). GS thread.
+	static void SetDisplayTimingEnabled(bool enabled);
+	static bool IsDisplayTimingEnabled();
+	/// [next] with the present's timing chained in front of it, or [next] alone without the extension.
+	/// [times] and [time] must live until the vkQueuePresentKHR they go to.
+	static const void* ChainPresentTiming(VkPresentTimesInfoGOOGLE* times, VkPresentTimeGOOGLE* time, const void* next = nullptr);
+	void PollDisplayed();
+	static u64 GetHostDisplayedCount();
+
 	// Creates a vulkan-renderable surface for the specified window handle.
 	static VkSurfaceKHR CreateVulkanSurface(VkInstance instance, VkPhysicalDevice physical_device, WindowInfo* wi);
 
@@ -128,6 +142,10 @@ public:
 
 	bool RecreateSurface(const WindowInfo& new_wi);
 	bool ResizeSwapChain(u32 new_width = 0, u32 new_height = 0, float new_scale = 1.0f);
+
+	/// Destroys the swap chain and gives the surface to the caller instead of destroying it: ZeroFG's
+	/// device B presents on it (GSZeroFG.h), and a later Create() rebuilds a swap chain on it.
+	VkSurfaceKHR ReleaseSurface();
 
 	// Change vsync enabled state. This may fail as it causes a swapchain recreation.
 	bool SetPresentMode(VkPresentModeKHR present_mode);

@@ -11,6 +11,7 @@
 #include "GS/Renderers/Vulkan/GSDeviceVK.h"
 #include "GS/Renderers/HW/GSDrawRow.h"
 #include "GS/Renderers/Vulkan/GSLsfg.h"
+#include "GS/Renderers/Vulkan/GSZeroFG.h"
 #include "GS/Renderers/Vulkan/VKBuilders.h"
 #include "GS/Renderers/Vulkan/VKCalibratedTimestamps.h"
 #include "GS/Renderers/Vulkan/VKShaderCache.h"
@@ -41,6 +42,27 @@ namespace
 	std::vector<RetiredBackbuffer> s_libretro_bb_retired;
 	// Comfortably beyond any libretro frontend's swapchain depth (2-3).
 	constexpr u64 kLibretroRetireFrames = 6;
+
+	// ZeroFG owns the window (GSZeroFG.h): this present draws into a backbuffer like the libretro one,
+	// so the whole present path still runs and ZeroFG takes the game frame from it, and nothing of
+	// this device reaches the screen. Set by DoBeginPresent, consumed by EndPresent.
+	bool s_zerofg_offscreen_present = false;
+
+	// This device's surface while ZeroFG's device B presents on it: the swap chain is gone, the
+	// surface stays (Android connects a window to one surface at a time). A swap chain is rebuilt on
+	// it when ZeroFG gives the window back; it is destroyed when the window goes.
+	VkSurfaceKHR s_zerofg_kept_surface = VK_NULL_HANDLE;
+
+	GSZeroFG::OutputSurface ZeroFGOutputOf(const VKSwapChain& swap_chain)
+	{
+		GSZeroFG::OutputSurface output;
+		output.window = swap_chain.GetWindowInfo().window_handle;
+		output.surface = swap_chain.GetSurface();
+		output.width = swap_chain.GetWidth();
+		output.height = swap_chain.GetHeight();
+		output.format = swap_chain.GetTextureFormat();
+		return output;
+	}
 } // namespace
 #include "GS/Renderers/Common/GSDevice.h"
 #include "GS/Renderers/Common/GSAlphaBitLogicOp.h"
@@ -221,7 +243,8 @@ VkInstance GSDeviceVK::CreateVulkanInstance(const WindowInfo& wi, OptionalExtens
 	app_info.pEngineName = "PCSX2";
 	app_info.engineVersion = VK_MAKE_VERSION(
 		BuildVersion::GitTagHi, BuildVersion::GitTagMid, BuildVersion::GitTagLo);
-	app_info.apiVersion = VK_API_VERSION_1_1;
+	// 1.1 for the GS device; 1.3 while ZeroFG is on, whose device B shares this instance (GSZeroFG.h).
+	app_info.apiVersion = GSZeroFG::InstanceApiVersion(VK_API_VERSION_1_1);
 
 	VkInstanceCreateInfo instance_create_info = {};
 	instance_create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
@@ -601,6 +624,10 @@ bool GSDeviceVK::SelectDeviceExtensions(ExtensionList* extension_list)
 	// vkGetDeviceFaultInfoEXT and the fault's addresses and reasons go to the log,
 	// so the next occurrence arrives with its own diagnosis instead of a rate.
 	m_optional_extensions.vk_ext_device_fault = SupportsExtension(VK_EXT_DEVICE_FAULT_EXTENSION_NAME, false);
+	// VK_GOOGLE_display_timing: the overlay's "Display" rate counts the presents the display showed,
+	// not the ones the driver accepted (two in one refresh: the compositor shows only the newer).
+	m_optional_extensions.vk_google_display_timing =
+		SupportsExtension(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME, false);
 	// VK_EXT_image_compression_control: on Turnip a draw that reads its own colour target in a
 	// declared feedback loop on the Adreno 613 reads stale data while the target is UBWC-compressed,
 	// so the destination-alpha loop recreates each target it reads without compression
@@ -663,6 +690,28 @@ bool GSDeviceVK::SelectDeviceExtensions(ExtensionList* extension_list)
 		listed(VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_EXTENSION_NAME) &&
 		SupportsExtension(VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME, false) &&
 		SupportsExtension(VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_EXTENSION_NAME, false);
+
+	// ZeroFG's handoff: the game's frames go to ZeroFG's own device as AHardwareBuffers with sync
+	// files, recorded with synchronization2. Asked for only while ZeroFG is switched on, and only
+	// as a whole set, so with ZeroFG off or unsupported the device is exactly what it was. The two
+	// remote play may have enabled already are not listed twice (SupportsExtension checks).
+	{
+		static constexpr const char* zerofg_handoff_extensions[] = {
+			VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME,
+			VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_EXTENSION_NAME,
+			VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME,
+			VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,
+		};
+		bool handoff = GSZeroFG::WantsSourceHandoff();
+		for (const char* name : zerofg_handoff_extensions)
+			handoff = handoff && listed(name);
+		if (handoff)
+		{
+			for (const char* name : zerofg_handoff_extensions)
+				SupportsExtension(name, false);
+		}
+		GSZeroFG::NoteSourceHandoff(handoff);
+	}
 #endif
 
 	return true;
@@ -1072,6 +1121,14 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 		descriptor_indexing_feature.descriptorBindingPartiallyBound = VK_TRUE;
 		Vulkan::AddPointerToChain(&device_info, &descriptor_indexing_feature);
 	}
+	// ZeroFG's handoff records with synchronization2 (SelectDeviceExtensions).
+	VkPhysicalDeviceSynchronization2FeaturesKHR zerofg_synchronization2_feature = {
+		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR};
+	if (GSZeroFG::SourceHandoffEnabled())
+	{
+		zerofg_synchronization2_feature.synchronization2 = VK_TRUE;
+		Vulkan::AddPointerToChain(&device_info, &zerofg_synchronization2_feature);
+	}
 
 	VkResult res = vkCreateDevice(m_physical_device, &device_info, nullptr, &m_device);
 	if (res != VK_SUCCESS)
@@ -1085,6 +1142,7 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 	// With the device created, we can fill the remaining entry points.
 	if (!Vulkan::LoadVulkanDeviceFunctions(m_device, !m_window_system.device.empty()))
 		return false;
+	VKSwapChain::SetDisplayTimingEnabled(m_optional_extensions.vk_google_display_timing);
 
 	// Grab the graphics and present queues.
 	vkGetDeviceQueue(m_device, m_graphics_queue_family_index, 0, &m_graphics_queue);
@@ -2251,7 +2309,10 @@ void GSDeviceVK::SubmitCommandBuffer(VKSwapChain* present_swap_chain)
 			return;
 		}
 
-		const VkPresentInfoKHR present_info = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, nullptr, 1,
+		VkPresentTimesInfoGOOGLE present_times;
+		VkPresentTimeGOOGLE present_time;
+		const VkPresentInfoKHR present_info = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+			VKSwapChain::ChainPresentTiming(&present_times, &present_time), 1,
 			present_swap_chain->GetRenderingFinishedSemaphorePtr(), 1, present_swap_chain->GetSwapChainPtr(),
 			present_swap_chain->GetCurrentImageIndexPtr(), nullptr};
 
@@ -2266,6 +2327,8 @@ void GSDeviceVK::SubmitCommandBuffer(VKSwapChain* present_swap_chain)
 				Common::Timer::ConvertValueToMilliseconds(Common::Timer::GetCurrentValue() - t_present_start);
 			VKSwapChain::NotePresent(present_elapsed_ms, res);
 		}
+		if (res == VK_SUCCESS || res == VK_SUBOPTIMAL_KHR)
+			present_swap_chain->PollDisplayed();
 		if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR)
 		{
 			// VK_ERROR_OUT_OF_DATE_KHR is not fatal, just means we need to recreate our swap chain.
@@ -3374,6 +3437,11 @@ void GSDeviceVK::Destroy()
 	// Same reasoning for frame generation, which additionally holds AHardwareBuffers shared
 	// with a second VkDevice it owns; its Shutdown idles both before releasing anything.
 	GSLsfg::Shutdown();
+	// ZeroFG's device B, created after this device, is released before it, and with it the hold it
+	// had on this device's surface.
+	GSZeroFG::Shutdown();
+	if (s_zerofg_kept_surface != VK_NULL_HANDLE)
+		VKSwapChain::DestroyVulkanSurface(m_instance, &m_window_info, std::exchange(s_zerofg_kept_surface, VK_NULL_HANDLE));
 
 	EndRenderPass();
 	if (GetCurrentCommandBuffer() != VK_NULL_HANDLE)
@@ -3444,6 +3512,7 @@ bool GSDeviceVK::UpdateWindow()
 		if (m_swap_chain->RecreateSurface(m_window_info))
 		{
 			m_window_info = m_swap_chain->GetWindowInfo();
+			GSZeroFG::ConnectSurface(ZeroFGOutputOf(*m_swap_chain));
 			return true;
 		}
 
@@ -3477,6 +3546,7 @@ bool GSDeviceVK::UpdateWindow()
 	RenderBlankFrame();
 	InvalidateCachedState();
 	SetInitialState(m_current_command_buffer);
+	GSZeroFG::ConnectSurface(ZeroFGOutputOf(*m_swap_chain));
 	return true;
 }
 
@@ -3527,8 +3597,12 @@ DisplayRotation GSDeviceVK::GetSurfacePreRotation() const
 
 void GSDeviceVK::DestroySurface()
 {
+	// ZeroFG leaves the window first: device B may be presenting on it, on this device's surface.
+	GSZeroFG::DisconnectSurface();
 	WaitForGPUIdle();
 	m_swap_chain.reset();
+	if (s_zerofg_kept_surface != VK_NULL_HANDLE)
+		VKSwapChain::DestroyVulkanSurface(m_instance, &m_window_info, std::exchange(s_zerofg_kept_surface, VK_NULL_HANDLE));
 }
 
 std::string GSDeviceVK::GetDriverInfo() const
@@ -3595,7 +3669,8 @@ void GSDeviceVK::UpdateFrameGeneration()
 	// the swapchain geometry actually changed. The path goes in first because availability is partly
 	// a question about that file.
 	GSLsfg::SetDllPath(GSConfig.LsfgDllPath);
-	if (!GSConfig.LsfgEnabled || !GSLsfg::IsAvailable())
+	// One frame generation at a time: while ZeroFG takes frames, LSFG stays down.
+	if (!GSConfig.LsfgEnabled || !GSLsfg::IsAvailable() || GSZeroFG::WantsFrames())
 	{
 		if (GSLsfg::IsActive())
 			GSLsfg::Shutdown();
@@ -3664,6 +3739,92 @@ GSDevice::PresentResult GSDeviceVK::DoBeginPresent(bool frame_skip)
 
 	if (frame_skip)
 		return PresentResult::FrameSkipped;
+
+	// ZeroFG (GSZeroFG.h), Main Surface Authority. The presenter gave the window back after a
+	// failure, or ZeroFG was switched off or to another engine mode in game (the reconnect below then
+	// rebuilds the engine): take the presenter off the window and rebuild this
+	// device's swap chain on it if device B was presenting there. ZeroFG switched on (again, or a new
+	// presenter after a failure): offer the window. The presenter owns the output and wants the
+	// window: drop the swap chain (the window stays, device B presents on the same surface).
+	// The swap chain back on the window after ZeroFG left it: on the surface device B presented on,
+	// else (that surface was lost: device B's handback after VK_ERROR_SURFACE_LOST_KHR) on a new
+	// surface of the window. Until one works the window shows nothing, so a failure is retried every
+	// quarter second rather than once: a single failed try left the window without a swap chain.
+	static bool s_zerofg_rebuild_pending = false;
+	static Common::Timer::Value s_zerofg_rebuild_next = 0;
+	const auto rebuild_after_zerofg = [this]() {
+		ExecuteCommandBuffer(false);
+		WaitForGPUIdle();
+		for (u32 attempt = 0; attempt < 2 && !m_swap_chain; attempt++)
+		{
+			VkSurfaceKHR surface = attempt == 0 ? std::exchange(s_zerofg_kept_surface, VK_NULL_HANDLE) : VK_NULL_HANDLE;
+			if (surface == VK_NULL_HANDLE)
+				surface = VKSwapChain::CreateVulkanSurface(m_instance, m_physical_device, &m_window_info);
+			if (surface == VK_NULL_HANDLE)
+				continue;
+			VkPresentModeKHR present_mode;
+			if (!VKSwapChain::SelectPresentMode(surface, &m_vsync_mode, &present_mode))
+			{
+				VKSwapChain::DestroyVulkanSurface(m_instance, &m_window_info, surface);
+				continue;
+			}
+			// Create() owns the surface, and destroys it on failure.
+			m_swap_chain = VKSwapChain::Create(m_window_info, surface, present_mode,
+				Pcsx2Config::GSOptions::TriStateToOptionalBoolean(GSConfig.ExclusiveFullscreenControl));
+		}
+		if (m_swap_chain)
+		{
+			m_window_info = m_swap_chain->GetWindowInfo();
+			if (s_zerofg_rebuild_pending)
+				Console.WriteLn("VK: the swap chain is back on the window after ZeroFG left it.");
+			s_zerofg_rebuild_pending = false;
+			return;
+		}
+		if (!s_zerofg_rebuild_pending)
+			Console.Error("VK: ZeroFG left the window, but the swap chain could not be rebuilt; retrying");
+		s_zerofg_rebuild_pending = true;
+		s_zerofg_rebuild_next = Common::Timer::GetCurrentValue() + Common::Timer::ConvertMillisecondsToValue(250.0);
+	};
+	const bool zerofg_failed = GSZeroFG::ReconnectRequested();
+	if (zerofg_failed || (GSZeroFG::Connected() && (!GSConfig.ZeroFGEnabled || GSZeroFG::ModeChanged())))
+	{
+		if (zerofg_failed)
+			GSZeroFG::FailOpen();
+		else
+			GSZeroFG::DisconnectSurface();
+		if (!m_swap_chain && m_window_info.type != WindowInfo::Type::Surfaceless)
+			rebuild_after_zerofg();
+	}
+	else if (s_zerofg_rebuild_pending && !m_swap_chain && m_window_info.type != WindowInfo::Type::Surfaceless &&
+			 !GSZeroFG::Connected())
+	{
+		if (Common::Timer::GetCurrentValue() >= s_zerofg_rebuild_next)
+			rebuild_after_zerofg();
+	}
+	else if (m_swap_chain && GSConfig.ZeroFGEnabled && GSZeroFG::CanConnect())
+	{
+		GSZeroFG::ConnectSurface(ZeroFGOutputOf(*m_swap_chain));
+	}
+	else if (m_swap_chain && GSZeroFG::OwnsOutput() && GSZeroFG::MainSurfaceHandoffPending())
+	{
+		// This frame's work is recorded but not submitted, and references no swap chain image yet.
+		// The swap chain goes, the surface stays for device B.
+		WaitForGPUIdle();
+		s_zerofg_kept_surface = m_swap_chain->ReleaseSurface();
+		m_swap_chain.reset();
+		GSZeroFG::MainSurfaceReleasedByA();
+	}
+	s_zerofg_offscreen_present = GSZeroFG::OwnsOutput();
+	if (s_zerofg_offscreen_present)
+	{
+		// ZeroFG owns the window: nothing this device would draw for the present reaches the screen
+		// (device B's Post draws the game frame and the overlay). So the present records no render
+		// pass and no draw: PresentRect skips the screen target, RenderImGui only hands ImGui's draw
+		// data over, and EndPresent captures the game frame and submits. With no render pass open,
+		// this is not "presenting" for the stream buffers either: a full one is flushed as outside a
+		// present.
+		return PresentResult::OK;
+	}
 
 	// If we're running surfaceless, kick the command buffer so we don't run out of descriptors.
 	if (!m_swap_chain)
@@ -3841,6 +4002,26 @@ GSDevice::PresentResult GSDeviceVK::DoBeginPresent(bool frame_skip)
 
 void GSDeviceVK::EndPresent()
 {
+	if (s_zerofg_offscreen_present)
+	{
+		// ZeroFG owns the window (DoBeginPresent): no render pass to end. ImGui's draw data goes to
+		// its Post, the game frame to its handoff. Without a swap chain SubmitCommandBuffer does not
+		// consume the new-frame flag, so it is taken here. The draw rectangle is in the presentation
+		// size's pixels, which ZeroFG scales to its own output.
+		RenderImGui();
+		s_zerofg_offscreen_present = false;
+		VkCommandBuffer cmdbuffer = GetCurrentCommandBuffer();
+		const GSVector2i pres = GetPresentationSize();
+		const bool captured = CaptureZeroFGFrame(cmdbuffer, std::exchange(m_present_has_new_frame, false),
+			static_cast<u32>(pres.x), static_cast<u32>(pres.y));
+		SubmitCommandBuffer(static_cast<VKSwapChain*>(nullptr));
+		if (captured)
+			GSZeroFG::PublishCapturedFrame();
+		MoveToNextCommandBuffer();
+		InvalidateCachedState();
+		return;
+	}
+
 	RenderImGui();
 
 	VkCommandBuffer cmdbuffer = GetCurrentCommandBuffer();
@@ -3911,10 +4092,67 @@ void GSDeviceVK::EndPresent()
 		}
 	}
 
+	// ZeroFG takes the game frames while this device still presents too, before its presenter owns
+	// the window: they are what it starts from.
+	const bool zerofg_captured = CaptureZeroFGFrame(cmdbuffer, m_present_has_new_frame, m_swap_chain->GetWidth(),
+		m_swap_chain->GetHeight());
+
 	SubmitCommandBuffer(m_swap_chain.get());
+	if (zerofg_captured)
+		GSZeroFG::PublishCapturedFrame();
 	MoveToNextCommandBuffer();
 
 	InvalidateCachedState();
+}
+
+bool GSDeviceVK::CaptureZeroFGFrame(VkCommandBuffer cmdbuffer, bool new_frame, u32 output_width, u32 output_height)
+{
+	if (!new_frame)
+		return false;
+	GSZeroFG::NoteSourceFrame();
+	if (!GSZeroFG::WantsFrames())
+		return false;
+	// The texture the present drew from, which src_rect refers to: an upscaler or CAS replaces the
+	// game's own (GetCurrent()) with its output, at the size it is drawn at.
+	GSTextureVK* const current = static_cast<GSTextureVK*>(
+		m_present_geometry.source ? m_present_geometry.source : GetCurrent());
+	if (!current)
+		return false;
+	current->TransitionToLayout(cmdbuffer, GSTextureVK::Layout::TransferSrc);
+	GSZeroFG::GameFrame frame;
+	frame.image = current->GetImage();
+	const GSVector4i& src = m_present_geometry.src_rect;
+	const GSVector4& draw = m_present_geometry.draw_rect;
+	frame.src[0] = src.x;
+	frame.src[1] = src.y;
+	frame.src[2] = src.z;
+	frame.src[3] = src.w;
+	frame.draw[0] = draw.x;
+	frame.draw[1] = draw.y;
+	frame.draw[2] = draw.z;
+	frame.draw[3] = draw.w;
+	frame.linear = m_present_geometry.linear;
+	frame.output_width = output_width;
+	frame.output_height = output_height;
+	// ZeroGS: the frame's HUD planes, at the merge's size. src_rect is in the presented texture's pixels; an upscaler's output is
+	// the merge scaled, so the same area is the rect scaled back.
+	GSTextureVK* const hud_p = static_cast<GSTextureVK*>(GetZeroFGPlane(0));
+	GSTextureVK* const hud_w = static_cast<GSTextureVK*>(GetZeroFGPlane(1));
+	if (hud_p && hud_w && current->GetWidth() > 0 && current->GetHeight() > 0)
+	{
+		const float sx = static_cast<float>(hud_p->GetWidth()) / static_cast<float>(current->GetWidth());
+		const float sy = static_cast<float>(hud_p->GetHeight()) / static_cast<float>(current->GetHeight());
+		hud_p->TransitionToLayout(cmdbuffer, GSTextureVK::Layout::TransferSrc);
+		hud_w->TransitionToLayout(cmdbuffer, GSTextureVK::Layout::TransferSrc);
+		frame.hud_p = hud_p->GetImage();
+		frame.hud_w = hud_w->GetImage();
+		frame.hud_src[0] = static_cast<s32>(std::lround(static_cast<float>(src.x) * sx));
+		frame.hud_src[1] = static_cast<s32>(std::lround(static_cast<float>(src.y) * sy));
+		frame.hud_src[2] = static_cast<s32>(std::lround(static_cast<float>(src.z) * sx));
+		frame.hud_src[3] = static_cast<s32>(std::lround(static_cast<float>(src.w) * sy));
+	}
+	GSZeroFG::CaptureGameFrame(cmdbuffer, frame);
+	return true;
 }
 
 bool GSDeviceVK::IsPresenting() const
@@ -4189,6 +4427,22 @@ bool GSDeviceVK::CreateDeviceAndSwapChain()
 	}
 
 	surface_cleanup.Cancel();
+
+	// ZeroFG's own device on this GPU, now that this one is up. Never fails the GS device.
+	if (m_window_info.type != WindowInfo::Type::Surfaceless)
+	{
+		GSZeroFG::SourceDevice source;
+		source.instance = m_instance;
+		source.instance_api_version = GSZeroFG::InstanceApiVersion(VK_API_VERSION_1_1);
+		source.physical_device = m_physical_device;
+		source.device = m_device;
+		source.queue = m_graphics_queue;
+		source.queue_family = m_graphics_queue_family_index;
+		source.api_version = m_device_properties.apiVersion;
+		GSZeroFG::OnDeviceCreated(source);
+		if (m_swap_chain)
+			GSZeroFG::ConnectSurface(ZeroFGOutputOf(*m_swap_chain));
+	}
 
 	// Render a frame as soon as possible to clear out whatever was previously being displayed.
 	if (m_window_info.type != WindowInfo::Type::Surfaceless)
@@ -5243,6 +5497,10 @@ void GSDeviceVK::DoStretchRect(GSTexture* sTex, const GSVector4& sRect, const GS
 void GSDeviceVK::PresentRect(GSTexture* sTex, const GSVector4& sRect, GSTexture* dTex, const GSVector4& dRect,
 	PresentShader shader, float shaderTime, Filter filter)
 {
+	// ZeroFG owns the window (DoBeginPresent): the screen target is not drawn.
+	if (!dTex && s_zerofg_offscreen_present)
+		return;
+
 	DisplayConstantBuffer cb;
 	cb.SetSource(sRect, sTex->GetSize());
 	cb.SetTarget(dRect, dTex ? dTex->GetSize() : GetPresentationSize());
@@ -7429,10 +7687,16 @@ void GSDeviceVK::RenderImGui()
 {
 	ImGui::Render();
 	const ImDrawData* draw_data = ImGui::GetDrawData();
+	// ZeroFG's Post draws this overlay while device B presents (the backbuffer here then goes
+	// nowhere); it reads the textures' pending changes, so before they are applied below.
+	GSZeroFG::CaptureOverlay(draw_data);
 	if (draw_data->CmdLists.Size == 0)
 		return;
 
 	UpdateImGuiTextures();
+	// ZeroFG owns the window (DoBeginPresent): its Post draws the overlay, this device does not.
+	if (s_zerofg_offscreen_present)
+		return;
 
 	// ImGui's vertex Position and ClipRect both come in *logical* pixel coords
 	// (against io.DisplaySize, which we set to the rotated presentation size).
@@ -12310,3 +12574,35 @@ void GSDeviceVK::RemotePlayRelease(bool device_idle)
 }
 
 #endif // __ANDROID__
+
+namespace GSVulkanPresents
+{
+	/// The overlay's "Display N/s": the presents the display showed (VK_GOOGLE_display_timing), the
+	/// GS device's own and LSFG's (VKSwapChain::PollDisplayed) plus ZeroFG's device B presenter's,
+	/// over half-second windows, so LSFG and ZeroFG are measured the same way, by the panel. "n/a"
+	/// where neither device has the timing. GS thread.
+	std::string RateText()
+	{
+		static u64 last_ns = 0;
+		static u64 last_count = 0;
+		static float rate = 0.0f;
+		const u64 zerofg = GSZeroFG::PresenterDisplayedCount();
+		if (!VKSwapChain::IsDisplayTimingEnabled() && !zerofg)
+			return "Display n/a";
+		const u64 now = static_cast<u64>(Common::Timer::ConvertValueToNanoseconds(Common::Timer::GetCurrentValue()));
+		const u64 count = VKSwapChain::GetHostDisplayedCount() + zerofg;
+		if (!last_ns || now - last_ns > 5'000'000'000ull)
+		{
+			last_ns = now;
+			last_count = count;
+			rate = 0.0f;
+		}
+		else if (now - last_ns >= 500'000'000ull)
+		{
+			rate = static_cast<float>(count - last_count) * 1e9f / static_cast<float>(now - last_ns);
+			last_ns = now;
+			last_count = count;
+		}
+		return fmt::format("Display {:.0f}/s", rate);
+	}
+} // namespace GSVulkanPresents

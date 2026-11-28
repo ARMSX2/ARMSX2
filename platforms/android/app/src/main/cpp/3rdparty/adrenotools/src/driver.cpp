@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BSD-2-Clause
 // Copyright © 2021 Billy Laws
 
+#include <atomic>
 #include <string>
 #include <string_view>
 #include <sys/stat.h>
@@ -15,6 +16,12 @@
 #include "hook/hook_impl_params.h"
 #include <adrenotools/driver.h>
 #include <unistd.h>
+
+namespace {
+// Shared with the hooks through HookImplParams (ADRENOTOOLS_DRIVER_CONTEXT_PRIORITY).
+std::atomic<uint32_t> contextPriority{0};
+std::atomic<uint32_t> contextsRaised{0};
+}
 
 void *adrenotools_open_libvulkan(int dlopenFlags, int featureFlags, const char *tmpLibDir, const char *hookLibDir, const char *customDriverDir, const char *customDriverName, const char *fileRedirectDir, void **userMappingHandle) {
     // Bail out if linkernsbypass failed to load, this probably means we're on api < 28
@@ -84,13 +91,22 @@ void *adrenotools_open_libvulkan(int dlopenFlags, int featureFlags, const char *
         }
     }()};
 
-    initHookParam(new HookImplParams(featureFlags, tmpLibDir, hookLibDir, customDriverDir, customDriverName, fileRedirectDir, importMapping));
+    initHookParam(new HookImplParams(featureFlags, tmpLibDir, hookLibDir, customDriverDir, customDriverName, fileRedirectDir, importMapping,
+                                     &contextPriority, &contextsRaised));
 
     // Load the libvulkan hook into the isolated namespace
     if (!linkernsbypass_namespace_dlopen("libmain_hook.so", RTLD_GLOBAL, hookNs))
         return nullptr;
 
     return linkernsbypass_namespace_dlopen_unique("/system/lib64/libvulkan.so", tmpLibDir, dlopenFlags, hookNs);
+}
+
+void adrenotools_set_context_priority(uint32_t priority) {
+    contextPriority.store(priority, std::memory_order_release);
+}
+
+uint32_t adrenotools_context_priority_raised() {
+    return contextsRaised.load(std::memory_order_acquire);
 }
 
 bool adrenotools_import_user_mem(void *handle, void *hostPtr, uint64_t size) {

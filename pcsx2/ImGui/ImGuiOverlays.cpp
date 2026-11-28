@@ -88,6 +88,7 @@ SmallString s_gpu_usage_line;
 SmallString s_gpu_debug_info_line;
 SmallString s_gpu_stats_line;
 SmallString s_lsfg_line;
+SmallString s_zerofg_line;
 SmallString s_speed_icon;
 #if defined(__APPLE__) && TARGET_OS_IPHONE
 SmallString s_ios_device_stats_line;
@@ -129,7 +130,39 @@ namespace GSLsfg
 	std::string GetStatusText();
 	bool StatusIsProblem();
 }
+// Likewise ZeroFG (GSZeroFG.h).
+namespace GSZeroFG
+{
+	std::string GetOverlayText();
+}
+// And the app's accepted vkQueuePresentKHR calls per second (GSDeviceVK.cpp).
+namespace GSVulkanPresents
+{
+	std::string RateText();
+}
 #endif
+
+/// ZeroFG's line, or empty while it is off: see GSZeroFG::GetOverlayText.
+static std::string ZeroFGStatusText()
+{
+#ifdef ENABLE_VULKAN
+	return GSZeroFG::GetOverlayText();
+#else
+	return {};
+#endif
+}
+
+/// "Display N/s", the presents the display showed (by Vulkan's display timing, not the presents the
+/// driver accepted), for the frame generation lines: the same count for LSFG and ZeroFG, so the two
+/// compare on what reaches the panel. Empty without Vulkan.
+static std::string DisplayRateText()
+{
+#ifdef ENABLE_VULKAN
+	return GSVulkanPresents::RateText();
+#else
+	return {};
+#endif
+}
 
 /// Frame generation's own status line, or empty when the user has not switched it on. Behind a
 /// function so the draw code below carries no #ifdef: LSFG lives in the Vulkan backend and there
@@ -302,13 +335,20 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 	const std::string lsfg_status = LsfgStatusText();
 	const bool lsfg_line = !lsfg_status.empty() && (enabled_lines != 0 || LsfgStatusIsProblem());
 	enabled_lines |= static_cast<u32>(lsfg_line) << 12;
+	// ZeroFG's line, on its own bit for the same reason, and only with the rest of the overlay.
+	const std::string zerofg_status = ZeroFGStatusText();
+	const bool zerofg_line = !zerofg_status.empty() && enabled_lines != 0;
+	enabled_lines |= static_cast<u32>(zerofg_line) << 13;
 	if (enabled_lines == 0)
 		return;
 
 	// Not cached behind the 100ms refresh like the lines below it. It is already built once per
 	// frame for the bit above, and caching it would leave the line on screen for up to a refresh
 	// after frame generation was switched off.
-	s_lsfg_line.assign(lsfg_status);
+	// Built every frame while a frame generation line shows, so its half-second windows keep time.
+	const std::string display = (lsfg_line || zerofg_line) ? DisplayRateText() : std::string();
+	s_lsfg_line.assign(lsfg_line && !display.empty() ? fmt::format("{} | {}", lsfg_status, display) : lsfg_status);
+	s_zerofg_line.assign(zerofg_line ? (display.empty() ? zerofg_status : fmt::format("{} | {}", zerofg_status, display)) : std::string());
 
 	const float shadow_offset = std::ceil(scale);
 
@@ -598,6 +638,8 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 			// user comparing "the game runs at 30" with "the screen gets 60" wants them adjacent.
 			if (!s_lsfg_line.empty())
 				DRAW_LINE(osd_font, font_size, s_lsfg_line.c_str(), OsdTextColor());
+			if (!s_zerofg_line.empty())
+				DRAW_LINE(osd_font, font_size, s_zerofg_line.c_str(), OsdTextColor());
 
 			if (!s_thermal_line.empty())
 				DRAW_LINE(osd_font, font_size, s_thermal_line.c_str(), OsdTextColor());
@@ -818,6 +860,8 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 
 			if (!s_lsfg_line.empty())
 				DRAW_LINE(osd_font, font_size, s_lsfg_line.c_str(), OsdTextColor());
+			if (!s_zerofg_line.empty())
+				DRAW_LINE(osd_font, font_size, s_zerofg_line.c_str(), OsdTextColor());
 
 			if (!s_thermal_line.empty())
 				DRAW_LINE(osd_font, font_size, s_thermal_line.c_str(), OsdTextColor());

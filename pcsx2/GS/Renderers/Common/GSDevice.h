@@ -1791,7 +1791,10 @@ protected:
 	bool m_present_has_new_frame = false;
 	struct PresentGeometry
 	{
-		GSVector4i src_rect = GSVector4i::zero(); ///< the game's visible area in GetCurrent(), texture pixels
+		/// The texture the present drew from: GetCurrent(), or the output an upscaler or CAS put in its
+		/// place, which src_rect then refers to.
+		GSTexture* source = nullptr;
+		GSVector4i src_rect = GSVector4i::zero(); ///< the game's visible area in source, texture pixels
 		GSVector4 draw_rect = GSVector4::zero();  ///< where it lands in the presentation, pixels
 		bool linear = false;                      ///< bilinear, else nearest
 		bool plain = false;                       ///< the present is nothing but that scaled blit
@@ -1800,6 +1803,10 @@ protected:
 	u64 m_last_frame_displayed_time = 0;
 
 	GSTexture* m_merge = nullptr;
+	/// ZeroGS: the HUD planes (P drawn over black, W over white) of the frame merged last, through the merge's geometry
+	/// (GSRendererHW::ZeroFGMergeHudPlanes); valid only for that frame.
+	GSTexture* m_zerofg_planes[2] = {};
+	bool m_zerofg_planes_valid = false;
 	GSTexture* m_weavebob = nullptr;
 	GSTexture* m_blend = nullptr;
 	GSTexture* m_mad = nullptr;
@@ -2082,6 +2089,15 @@ public:
 	__fi bool IsPresentThrottleAllowed() const { return m_allow_present_throttle; }
 
 	__fi GSTexture* GetCurrent() const { return m_current; }
+
+	/// ZeroGS: the HUD planes of the frame GetCurrent() shows (0 P, 1 W), at the merge's size, or null when it has none.
+	__fi GSTexture* GetZeroFGPlane(int i) const { return m_zerofg_planes_valid ? m_zerofg_planes[i] : nullptr; }
+	__fi void InvalidateZeroFGPlanes() { m_zerofg_planes_valid = false; }
+	/// Between BeginZeroFGPlanes and EndZeroFGPlanes: the plane to draw into.
+	__fi GSTexture* GetZeroFGPlaneTarget(int i) const { return m_zerofg_planes[i]; }
+	/// The planes at [size], cleared to no HUD (P black, W white); then EndZeroFGPlanes once they are drawn.
+	bool BeginZeroFGPlanes(const GSVector2i& size);
+	__fi void EndZeroFGPlanes() { m_zerofg_planes_valid = true; }
 	__fi GSTexture* GetMAD() const { return m_mad; }
 	
 	void Recycle(GSTexture* t);
@@ -2144,9 +2160,10 @@ public:
 	/// game's own image: it repeats exactly this scaled blit for each generated frame, so it only
 	/// does so when [plain] says the present was nothing more (no upscaler or sharpening pass, no
 	/// TV shader, no rotation). Otherwise frame generation keeps working on the finished screen.
-	void NotePresentGeometry(const GSVector4i& src_rect, const GSVector4& draw_rect, bool linear, bool plain)
+	void NotePresentGeometry(
+		GSTexture* source, const GSVector4i& src_rect, const GSVector4& draw_rect, bool linear, bool plain)
 	{
-		m_present_geometry = {src_rect, draw_rect, linear, plain};
+		m_present_geometry = {source, src_rect, draw_rect, linear, plain};
 	}
 
 	/// Presents the frame to the display.

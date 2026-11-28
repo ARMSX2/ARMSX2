@@ -1474,6 +1474,26 @@ void GSDevice::ClearCurrent()
 	m_fsr1_easu = nullptr;
 	m_fsr1_output = nullptr;
 	m_sgsr_output = nullptr;
+
+	for (GSTexture*& plane : m_zerofg_planes)
+	{
+		delete plane;
+		plane = nullptr;
+	}
+	m_zerofg_planes_valid = false;
+}
+
+bool GSDevice::BeginZeroFGPlanes(const GSVector2i& size)
+{
+	m_zerofg_planes_valid = false;
+	for (GSTexture*& plane : m_zerofg_planes)
+	{
+		if (!ResizeRenderTarget(&plane, size.x, size.y, false, false))
+			return false;
+	}
+	ClearRenderTarget(m_zerofg_planes[0], 0u);
+	ClearRenderTarget(m_zerofg_planes[1], 0xffffffffu);
+	return true;
 }
 
 void GSDevice::Merge(GSTexture* sTex[3], GSVector4* sRect, GSVector4* dRect, const MergeTopBand* top_band, const GSVector2i& fs, const GSRegPMODE& PMODE, const GSRegEXTBUF& EXTBUF, u32 c)

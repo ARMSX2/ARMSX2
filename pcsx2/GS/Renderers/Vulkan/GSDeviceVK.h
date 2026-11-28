@@ -88,6 +88,9 @@ public:
 		/// only while GSConfig.LsfgFp16 is on, so nobody else's device changes.
 		bool vk_khr_shader_float16_int8 : 1;
 		bool vk_ext_device_fault : 1;
+		/// VK_GOOGLE_display_timing: which presents the display really showed, for the overlay's
+		/// "Display" rate (VKSwapChain::PollDisplayed). Nothing paces by it.
+		bool vk_google_display_timing : 1;
 		/// VK_EXT_image_compression_control: an image can be created without framebuffer
 		/// compression. Requested on Adreno only; used by the Adreno 613's destination-alpha loop to
 		/// leave uncompressed the targets that loop reads (GSTextureVK::MakeUncompressed).
@@ -322,6 +325,11 @@ private:
 
 	void SubmitCommandBuffer(VKSwapChain* present_swap_chain);
 	void MoveToNextCommandBuffer();
+
+	/// Hands ZeroFG (GSZeroFG.h) this present's game frame when it has a new one and ZeroFG takes
+	/// frames; [output_width] x [output_height] is the target the draw rectangle is in. True when it
+	/// was recorded, so the caller publishes it after the submit.
+	bool CaptureZeroFGFrame(VkCommandBuffer cmdbuffer, bool new_frame, u32 output_width, u32 output_height);
 
 	enum class WaitType
 	{

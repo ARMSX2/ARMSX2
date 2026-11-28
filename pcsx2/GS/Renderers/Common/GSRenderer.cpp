@@ -166,6 +166,8 @@ bool GSRenderer::Merge(int field)
 	float tex_scale[3] = { 0.0f, 0.0f, 0.0f };
 	int y_offset[3] = { 0, 0, 0 };
 	const bool feedback_merge = m_regs->EXTWRITE.WRITE == 1;
+	// ZeroGS: a merge that ends before its HUD planes are drawn leaves the frame with none, never the last frame's.
+	g_gs_device->InvalidateZeroFGPlanes();
 
 	// Need to do this here, if the user has Anti-Blur enabled, these offsets can get wiped out/changed.
 	const bool game_deinterlacing = (PCRTCDisplays.PCRTCDisplays[0].prevFramebufferOffsets.y != PCRTCDisplays.PCRTCDisplays[0].framebufferOffsets.y) !=
@@ -456,6 +458,7 @@ bool GSRenderer::Merge(int field)
 			apply_field_shift ? (upscale_rows * (field ^ field2)) : 0, field ^ field2);
 	}
 
+	float zerofg_plane_shift = 0.0f;  // what the bob pass moves the picture by (GSDevice::Interlace, case 1)
 	if ((tex[0] || tex[1]) && isReallyInterlaced() && GSConfig.InterlaceMode != GSInterlaceMode::Off)
 	{
 		const float offset = is_bob ? (tex[1] ? tex_scale[1] : tex_scale[0]) : 0.0f;
@@ -472,6 +475,8 @@ bool GSRenderer::Merge(int field)
 		const int fb_top = PCRTCDisplays.PCRTCDisplays[circuit].framebufferRect.y + y_offset[circuit];
 		const int interlace_field = (mode == 4) ? (field ^ field2 ^ (fb_top & 1)) : (field ^ field2);
 		g_gs_device->Interlace(fs, interlace_field, mode, offset, field_pad, tex_scale[circuit], dst[circuit].y);
+		if (mode == 1)
+			zerofg_plane_shift = offset * static_cast<float>(1 - interlace_field);
 	}
 
 	// Adaptive deinterlacing consumes prior fields. A skipped interlaced frame must update that
@@ -482,6 +487,12 @@ bool GSRenderer::Merge(int field)
 			m_scanmask_used--;
 		return true;
 	}
+
+	// ZeroGS: this frame's HUD planes through the same geometry. A filter that recolours the whole picture after the merge (ShadeBoost,
+	// a shader chain) leaves nothing the planes explain: then the frame has none. FXAA only touches edges, where the engine's guard
+	// leaves to the world what the planes no longer explain.
+	ZeroFGMergeHudPlanes(tex, src_gs_read, dst, fs, zerofg_plane_shift,
+		GSConfig.ShadeBoost || (GSConfig.ShaderChainEnabled && !GSConfig.ShaderChainPreset.empty()));
 
 	if (GSConfig.ShadeBoost)
 		g_gs_device->ShadeBoost();
@@ -1024,6 +1035,9 @@ void GSRenderer::EndPresentFrame()
 	ImGuiManager::NewFrame();
 }
 
+// ZeroFG (GSRendererHW.cpp): the content-break signal, one call per vsync.
+void ZeroFGCutOnVsync(bool idle_frame, u64 transfer_n);
+
 void GSRenderer::SubmitVsync(u32 field, bool registers_written)
 {
 	// VSYNC is never queued: present runs on the MTGS thread behind a drain, so
@@ -1219,6 +1233,8 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 	// drawing, which must be presented).
 	if (!skipped_final_render)
 		m_consecutive_blank_frames = blank_frame ? (m_consecutive_blank_frames + 1) : 0;
+
+	ZeroFGCutOnVsync(idle_frame, s_transfer_n);
 
 	m_last_draw_n = s_n;
 	m_last_transfer_n = s_transfer_n;
@@ -1428,10 +1444,11 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 				// path either has no output to draw or redraws the previous one. Frame generation
 				// reads it so it does not interpolate motion into frames the game never drew.
 				g_gs_device->NotePresentHasNewFrame();
-				// Frame generation repeats this blit for its generated frames, so it needs the present
-				// to be only that blit: the upscalers and CAS above draw it themselves, a TV shader
-				// filters it, rotation turns it.
-				g_gs_device->NotePresentGeometry(src_rect, draw_rect, GSConfig.LinearPresent != GSPostBilinearMode::Off,
+				// Frame generation repeats this blit for its generated frames when it runs on the game's
+				// own image, which needs the present to be only that blit: the upscalers and CAS above
+				// draw it themselves, a TV shader filters it, rotation turns it. ZeroFG copies from
+				// [current], the texture the present draws.
+				g_gs_device->NotePresentGeometry(current, src_rect, draw_rect, GSConfig.LinearPresent != GSPostBilinearMode::Off,
 					GSConfig.Upscaler == GSUpscaler::Off && GSConfig.CASMode == GSCASMode::Disabled &&
 						s_tv_shader_indices[GSConfig.TVShader] == PresentShader::COPY && !s_sbs_vr &&
 						GSConfig.LinearPresent != GSPostBilinearMode::BilinearSharp &&

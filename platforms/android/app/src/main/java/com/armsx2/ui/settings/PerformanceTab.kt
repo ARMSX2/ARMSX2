@@ -429,6 +429,15 @@ fun PerformanceTab(state: MutableState<Settings>) {
         // depends on a file the user has to supply. Github flavour only — the section
         // returns immediately when BuildConfig.LSFG is false.
         SettingsDivider()
+        com.armsx2.ui.common.ZeroFgSection(
+            enabled = s.graphics.zeroFgEnabled,
+            mode = s.graphics.zeroFgMode,
+            multiplier = s.graphics.zeroFgMultiplier,
+        ) { on, mode, multiplier ->
+            apply(s.copy(graphics = s.graphics.copy(zeroFgEnabled = on, zeroFgMode = mode, zeroFgMultiplier = multiplier)))
+            // The panel's refresh request follows ZeroFG (EmulationSurface.applyZeroFgRefresh).
+            com.armsx2.runtime.MainActivityRuntime.surface.value?.applyFrameRatePreference()
+        }
         com.armsx2.ui.common.LsfgSection(
             enabled = s.graphics.lsfgEnabled,
             multiplier = s.graphics.lsfgMultiplier,

@@ -71,6 +71,13 @@ protected:
 
 	virtual GSTexture* GetOutput(int i, float& scale, int& y_offset) = 0;
 	virtual GSTexture* GetFeedbackOutput(float& scale) { return nullptr; }
+	/// ZeroGS: the HUD planes of the frame just merged, through the merge's geometry ([src] and [dst] per circuit, as the merge read and
+	/// drew them; [y_shift] what the deinterlacer moved the picture by after it). [post]: a filter changed the picture after the merge.
+	/// Without the HUD layer (the software renderer) the frame has none.
+	virtual void ZeroFGMergeHudPlanes(GSTexture* const* tex, const GSVector4* src, const GSVector4* dst, const GSVector2i& fs, float y_shift, bool post)
+	{
+		g_gs_device->InvalidateZeroFGPlanes();
+	}
 
 public:
 	GSRenderer();

@@ -247,6 +247,9 @@ VULKAN_DEVICE_ENTRY_POINT(vkGetCalibratedTimestampsEXT, false)
 // VK_KHR_push_descriptor
 VULKAN_DEVICE_ENTRY_POINT(vkCmdPushDescriptorSetKHR, false)
 
+// VK_GOOGLE_display_timing
+VULKAN_DEVICE_ENTRY_POINT(vkGetPastPresentationTimingGOOGLE, false)
+
 // VK_EXT_swapchain_maintenance1
 VULKAN_DEVICE_ENTRY_POINT(vkReleaseSwapchainImagesEXT, false)
 
