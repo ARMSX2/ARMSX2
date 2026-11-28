@@ -377,8 +377,13 @@ object SecondScreen {
             p.show()
             presentation = p
             applyOsdRouting()
-        }
+        }.onFailure {
+            // Cold start: the host window isn't visible yet, so the system rejects the panel. Retry.
+            if (retries++ < 20) handler.postDelayed({ refresh(context) }, 50)
+        }.onSuccess { retries = 0 }
     }
+
+    private var retries = 0
 
     /** The panel itself. */
     private class Panel(context: Context, display: Display) : Presentation(context, display) {
